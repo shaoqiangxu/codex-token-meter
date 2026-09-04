@@ -27,8 +27,14 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 func (s *server) loginHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
-		token, _ := randomToken(24)
-		http.SetCookie(w, &http.Cookie{Name: "meter_csrf", Value: token, Path: "/", Secure: true, HttpOnly: false, SameSite: http.SameSiteStrictMode, MaxAge: 3600})
+		token := ""
+		if cookie, err := r.Cookie("meter_csrf"); err == nil {
+			token = cookie.Value
+		}
+		if token == "" {
+			token, _ = randomToken(24)
+			http.SetCookie(w, &http.Cookie{Name: "meter_csrf", Value: token, Path: "/", Secure: true, HttpOnly: false, SameSite: http.SameSiteStrictMode, MaxAge: 3600})
+		}
 		b, _ := webFS.ReadFile("web/login.html")
 		body := strings.Replace(string(b), "{{CSRF}}", token, 1)
 		message := ""

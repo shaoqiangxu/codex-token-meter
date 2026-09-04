@@ -61,6 +61,7 @@ func runServer(ctx context.Context, configPath string) error {
 	})
 	mux.HandleFunc("/readyz", s.ready)
 	mux.HandleFunc("/login", s.loginHandler)
+	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("/style.css", s.static)
 	mux.HandleFunc("/login.js", s.static)
 	mux.HandleFunc("/logout", s.logoutHandler)

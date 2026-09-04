@@ -41,6 +41,13 @@ func TestLoginCSRFIsServerRendered(t *testing.T) {
 	if csrf == nil || !strings.Contains(got.Body.String(), `name="csrf" value="`+csrf.Value+`"`) {
 		t.Fatal("CSRF token was not rendered into the login form")
 	}
+	reopen := httptest.NewRequest(http.MethodGet, "https://token.example/login", nil)
+	reopen.AddCookie(csrf)
+	reopened := httptest.NewRecorder()
+	s.loginHandler(reopened, reopen)
+	if len(reopened.Result().Cookies()) != 0 || !strings.Contains(reopened.Body.String(), `name="csrf" value="`+csrf.Value+`"`) {
+		t.Fatal("an existing CSRF cookie was unexpectedly rotated")
+	}
 
 	form := url.Values{"csrf": {csrf.Value}, "username": {"admin"}, "password": {password}}
 	post := httptest.NewRequest(http.MethodPost, "https://token.example/login", strings.NewReader(form.Encode()))
