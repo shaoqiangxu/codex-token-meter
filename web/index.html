@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex Token Meter</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<header><div><span class="brand">Codex Token Meter</span><span class="sub">实时、可核验的本地 Codex 用量</span></div><div class="header-actions"><span id="sse" class="pill offline">SSE 连接中</span><a href="/logout">退出</a></div></header>
+<main>
+  <section id="cards" class="cards"></section>
+  <section class="toolbar">
+    <select id="period"><option value="today">今天</option><option value="24h">最近24小时</option><option value="week">本周</option><option value="month">本月</option><option value="all">自定义时间（全部）</option></select>
+    <input id="from" type="datetime-local" title="自定义开始时间"><input id="to" type="datetime-local" title="自定义结束时间"><button id="applyRange" class="secondary">应用时间</button>
+    <input id="filter" placeholder="筛选主机 / 项目 / 模型 / 会话">
+    <button id="addWindows">添加 Windows 电脑</button><button id="addLinux" class="secondary">添加 Linux VPS</button>
+    <button id="addPurchase" class="secondary">录入 Credits 购买批次</button>
+    <a href="/api/export?format=csv">CSV</a><a href="/api/export?format=json">JSON</a>
+  </section>
+  <section class="panel"><div class="panel-title"><h2>实时会话</h2><span id="updated">等待数据</span></div><div class="table-wrap"><table>
+    <thead><tr><th>主机</th><th>项目 / 窗口</th><th>会话</th><th>主/子</th><th>模型</th><th>推理</th><th>状态</th><th>运行时长</th><th>实时估算</th><th>已结算</th><th>输入</th><th>缓存</th><th>缓存写入</th><th>输出</th><th>推理输出</th><th>命中率</th><th>上下文</th><th>OpenAI 等价</th><th>Vercel 等价</th><th>Credits</th><th>数据质量</th><th>最后事件</th></tr></thead>
+    <tbody id="sessions"></tbody>
+  </table></div></section>
+</main>
+<dialog id="dialog"><button class="close" id="close">×</button><h2 id="dialogTitle">详情</h2><div id="dialogBody"></div></dialog>
+<script src="/app.js"></script></body></html>

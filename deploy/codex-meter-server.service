@@ -1,0 +1,28 @@
+[Unit]
+Description=Codex Token Meter Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=codex-meter
+Group=codex-meter
+ExecStart=/usr/local/bin/codex-meter server --config /etc/codex-token-meter/server.json
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/codex-token-meter
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
