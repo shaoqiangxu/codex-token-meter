@@ -571,3 +571,31 @@ func TestAgentConfigPermission(t *testing.T) {
 		t.Fatalf("mode %o", st.Mode().Perm())
 	}
 }
+
+func TestECBUSDToCNYCrossRate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		io.WriteString(w, `<?xml version="1.0"?><Envelope><Cube><Cube time="2026-09-04"><Cube currency="USD" rate="1.1622"/><Cube currency="CNY" rate="7.7994"/></Cube></Cube></Envelope>`)
+	}))
+	defer srv.Close()
+	date, rate, err := fetchUSDCNY(context.Background(), srv.URL)
+	if err != nil || date != "2026-09-04" || rate < 6.70 || rate > 6.72 {
+		t.Fatalf("unexpected cross rate date=%s rate=%f err=%v", date, rate, err)
+	}
+}
+
+func TestParseOpenAIPriceMarkdown(t *testing.T) {
+	body := `
+| Input | $4 | 1M tokens |
+| Cached input | $0.4 | 1M tokens |
+| Output | $20 | 1M tokens |
+Prompts with >272K input tokens are priced at 2x input and 1.5x output for the full request.
+Cache writes are billed at 1.25x the uncached input token rate.`
+	spec, err := parseOpenAIPriceMarkdown(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Input != 4 || spec.Cached != .4 || spec.CacheWrite != 5 || spec.Output != 20 || spec.Threshold != 272000 || spec.InputMultiplier != 2 || spec.OutputMultiplier != 1.5 {
+		t.Fatalf("unexpected OpenAI pricing: %+v", spec)
+	}
+}

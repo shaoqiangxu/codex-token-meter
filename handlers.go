@@ -160,6 +160,7 @@ func (s *server) recordLoginFailure(ip string) {
 type sessionView struct {
 	HostID                                                    string `json:"host_id"`
 	Host                                                      string `json:"host"`
+	Platform                                                  string `json:"platform"`
 	ConversationID                                            string `json:"conversation_id"`
 	ParentID                                                  string `json:"parent_conversation_id"`
 	Project                                                   string `json:"project"`
@@ -218,17 +219,17 @@ func (s *server) snapshotSince(since time.Time) any {
 	return s.snapshotBetween(since, time.Now().UTC().AddDate(100, 0, 0))
 }
 func (s *server) snapshotBetween(since, until time.Time) any {
-	rows, err := s.db.Query(`WITH u AS (SELECT host_id,conversation_id,SUM(input_tokens) input_tokens,SUM(cached_input_tokens) cached_input_tokens,SUM(cache_write_input_tokens) cache_write_input_tokens,SUM(output_tokens) output_tokens,SUM(reasoning_output_tokens) reasoning_output_tokens,SUM(total_tokens) total_tokens FROM usage_events WHERE timestamp>=? AND timestamp<? GROUP BY host_id,conversation_id) SELECT s.host_id,a.alias,s.conversation_id,COALESCE(s.parent_conversation_id,''),COALESCE(s.repo_name,s.project_id,''),COALESCE(s.display_name,''),COALESCE(s.model,''),COALESCE(s.reasoning_effort,''),s.status,COALESCE(s.started_at,''),COALESCE(s.last_event_at,''),s.data_quality,s.model_context_window,COALESCE(u.input_tokens,0),COALESCE(u.cached_input_tokens,0),COALESCE(u.cache_write_input_tokens,0),COALESCE(u.output_tokens,0),COALESCE(u.reasoning_output_tokens,0),COALESCE(u.total_tokens,0),s.live_estimate FROM sessions s JOIN agents a ON a.host_id=s.host_id LEFT JOIN u ON u.host_id=s.host_id AND u.conversation_id=s.conversation_id WHERE u.total_tokens IS NOT NULL OR s.live_estimate>0 ORDER BY s.last_event_at DESC LIMIT 500`, since.Format(time.RFC3339Nano), until.Format(time.RFC3339Nano))
+	rows, err := s.db.Query(`WITH u AS (SELECT host_id,conversation_id,SUM(input_tokens) input_tokens,SUM(cached_input_tokens) cached_input_tokens,SUM(cache_write_input_tokens) cache_write_input_tokens,SUM(output_tokens) output_tokens,SUM(reasoning_output_tokens) reasoning_output_tokens,SUM(total_tokens) total_tokens FROM usage_events WHERE timestamp>=? AND timestamp<? GROUP BY host_id,conversation_id) SELECT s.host_id,a.alias,COALESCE(a.platform,''),s.conversation_id,COALESCE(s.parent_conversation_id,''),COALESCE(s.repo_name,s.project_id,''),COALESCE(s.display_name,''),COALESCE(s.model,''),COALESCE(s.reasoning_effort,''),s.status,COALESCE(s.started_at,''),COALESCE(s.last_event_at,''),s.data_quality,s.model_context_window,COALESCE(u.input_tokens,0),COALESCE(u.cached_input_tokens,0),COALESCE(u.cache_write_input_tokens,0),COALESCE(u.output_tokens,0),COALESCE(u.reasoning_output_tokens,0),COALESCE(u.total_tokens,0),s.live_estimate FROM sessions s JOIN agents a ON a.host_id=s.host_id LEFT JOIN u ON u.host_id=s.host_id AND u.conversation_id=s.conversation_id WHERE u.total_tokens IS NOT NULL OR s.live_estimate>0 ORDER BY s.last_event_at DESC LIMIT 500`, since.Format(time.RFC3339Nano), until.Format(time.RFC3339Nano))
 	if err != nil {
 		return map[string]any{"error": "database unavailable"}
 	}
 	defer rows.Close()
 	var list []map[string]any
 	tot := TokenCounts{CacheWriteVisible: true}
-	active := 0
+	activeRoots := map[string]struct{}{}
 	for rows.Next() {
 		var v sessionView
-		if rows.Scan(&v.HostID, &v.Host, &v.ConversationID, &v.ParentID, &v.Project, &v.Name, &v.Model, &v.Effort, &v.Status, &v.StartedAt, &v.LastEvent, &v.Quality, &v.ContextWindow, &v.Input, &v.Cached, &v.CacheWrite, &v.Output, &v.Reasoning, &v.Total, &v.Live) != nil {
+		if rows.Scan(&v.HostID, &v.Host, &v.Platform, &v.ConversationID, &v.ParentID, &v.Project, &v.Name, &v.Model, &v.Effort, &v.Status, &v.StartedAt, &v.LastEvent, &v.Quality, &v.ContextWindow, &v.Input, &v.Cached, &v.CacheWrite, &v.Output, &v.Reasoning, &v.Total, &v.Live) != nil {
 			continue
 		}
 		last := parseTime(v.LastEvent)
@@ -236,7 +237,11 @@ func (s *server) snapshotBetween(since, until time.Time) any {
 			v.Status = "STALE"
 		}
 		if time.Since(last) < 5*time.Minute {
-			active++
+			root := v.ParentID
+			if root == "" {
+				root = v.ConversationID
+			}
+			activeRoots[v.HostID+"\x00"+root] = struct{}{}
 		}
 		tot.InputTokens += v.Input
 		tot.CachedInputTokens += v.Cached
@@ -259,7 +264,7 @@ func (s *server) snapshotBetween(since, until time.Time) any {
 		if name == "" {
 			name = v.Project
 		}
-		list = append(list, map[string]any{"host_id": v.HostID, "host": v.Host, "conversation_id": v.ConversationID, "parent_conversation_id": v.ParentID, "project": v.Project, "name": name, "model": v.Model, "reasoning_effort": v.Effort, "status": v.Status, "started_at": v.StartedAt, "last_event_at": v.LastEvent, "data_quality": v.Quality, "model_context_window": v.ContextWindow, "input_tokens": v.Input, "cached_input_tokens": v.Cached, "cache_write_input_tokens": v.CacheWrite, "output_tokens": v.Output, "reasoning_output_tokens": v.Reasoning, "total_tokens": v.Total, "live_estimate": v.Live, "cache_hit_rate": hit, "context_percent": ctx})
+		list = append(list, map[string]any{"host_id": v.HostID, "host": v.Host, "platform": v.Platform, "conversation_id": v.ConversationID, "parent_conversation_id": v.ParentID, "project": v.Project, "name": name, "model": v.Model, "reasoning_effort": v.Effort, "status": v.Status, "started_at": v.StartedAt, "last_event_at": v.LastEvent, "data_quality": v.Quality, "model_context_window": v.ContextWindow, "input_tokens": v.Input, "cached_input_tokens": v.Cached, "cache_write_input_tokens": v.CacheWrite, "output_tokens": v.Output, "reasoning_output_tokens": v.Reasoning, "total_tokens": v.Total, "live_estimate": v.Live, "cache_hit_rate": hit, "context_percent": ctx})
 	}
 	rows.Close()
 	rangeTotal, rangeBySession := rangeCosts(s.db, since, until)
@@ -272,20 +277,36 @@ func (s *server) snapshotBetween(since, until time.Time) any {
 	var online int
 	s.db.QueryRow("SELECT COUNT(*) FROM agents WHERE revoked_at IS NULL AND last_seen>=?", time.Now().Add(-15*time.Second).UTC().Format(time.RFC3339Nano)).Scan(&online)
 	api, vercel, credits := rangeTotal.API, rangeTotal.Vercel, rangeTotal.Credits
-	var paid, purchased, weightedFX float64
-	s.db.QueryRow("SELECT COALESCE(SUM(paid_amount+fees),0),COALESCE(SUM(credits_received),0),COALESCE(SUM((paid_amount+fees)*exchange_rate),0) FROM credit_purchases").Scan(&paid, &purchased, &weightedFX)
-	creditUSD, rmb := 0.0, 0.0
+	var paid, purchased float64
+	s.db.QueryRow("SELECT COALESCE(SUM(paid_amount+fees),0),COALESCE(SUM(credits_received),0) FROM credit_purchases").Scan(&paid, &purchased)
+	creditUSD := 0.0
 	if purchased > 0 {
 		creditUSD = credits.Value * paid / purchased
-		if paid > 0 {
-			rmb = creditUSD * weightedFX / paid
-		}
 	}
+	fx := s.latestExchangeRate()
+	apiCNY, vercelCNY, creditsCNY := api.Value*fx.Rate, vercel.Value*fx.Rate, creditUSD*fx.Rate
 	hit := float64(0)
 	if tot.InputTokens > 0 {
 		hit = float64(tot.CachedInputTokens) / float64(tot.InputTokens) * 100
 	}
-	return map[string]any{"generated_at": time.Now().UTC(), "range_start": since, "totals": map[string]any{"input_tokens": tot.InputTokens, "cached_input_tokens": tot.CachedInputTokens, "cache_write_input_tokens": tot.CacheWriteInputTokens, "output_tokens": tot.OutputTokens, "reasoning_output_tokens": tot.ReasoningOutputTokens, "total_tokens": tot.TotalTokens, "live_estimate": sumLive(list), "cache_hit_rate": hit, "active_sessions": active, "online_hosts": online, "api": api, "vercel": vercel, "credits": credits, "credits_purchase_usd": creditUSD, "rmb_equivalent": rmb, "actual_incremental_cash": 0}, "sessions": list}
+	return map[string]any{"generated_at": time.Now().UTC(), "range_start": since, "exchange_rate": fx, "hosts": s.hostViews(), "totals": map[string]any{"input_tokens": tot.InputTokens, "cached_input_tokens": tot.CachedInputTokens, "cache_write_input_tokens": tot.CacheWriteInputTokens, "output_tokens": tot.OutputTokens, "reasoning_output_tokens": tot.ReasoningOutputTokens, "total_tokens": tot.TotalTokens, "live_estimate": sumLive(list), "cache_hit_rate": hit, "active_sessions": len(activeRoots), "online_hosts": online, "api": api, "vercel": vercel, "credits": credits, "credits_purchase_usd": creditUSD, "api_cny": apiCNY, "vercel_cny": vercelCNY, "credits_purchase_cny": creditsCNY, "rmb_equivalent": apiCNY, "actual_incremental_cash": 0}, "sessions": list}
+}
+
+func (s *server) hostViews() []map[string]any {
+	rows, err := s.db.Query("SELECT host_id,alias,COALESCE(platform,''),COALESCE(last_seen,'') FROM agents WHERE revoked_at IS NULL ORDER BY platform,alias")
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	result := []map[string]any{}
+	for rows.Next() {
+		var id, alias, platform, lastSeen string
+		if rows.Scan(&id, &alias, &platform, &lastSeen) != nil {
+			continue
+		}
+		result = append(result, map[string]any{"host_id": id, "alias": alias, "platform": platform, "last_seen": lastSeen, "online": time.Since(parseTime(lastSeen)) < 15*time.Second})
+	}
+	return result
 }
 func sumLive(list []map[string]any) int64 {
 	var n int64

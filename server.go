@@ -54,6 +54,8 @@ func runServer(ctx context.Context, configPath string) error {
 	s := &server{cfg: cfg, db: db, hub: newHub(), login: map[string][]time.Time{}, ingestTimes: map[string][]time.Time{}}
 	go s.hub.run(s.snapshot)
 	go s.vercelPriceLoop(ctx)
+	go s.openAIPriceLoop(ctx)
+	go s.exchangeRateLoop(ctx)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

@@ -98,6 +98,12 @@ CREATE TABLE IF NOT EXISTS prices (
  currency TEXT NOT NULL, source_name TEXT NOT NULL, verified_at TEXT NOT NULL,
  stale INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS exchange_rates (
+ base_currency TEXT NOT NULL, quote_currency TEXT NOT NULL, rate REAL NOT NULL,
+ rate_date TEXT NOT NULL, source_name TEXT NOT NULL, fetched_at TEXT NOT NULL,
+ stale INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(base_currency, quote_currency)
+);
 CREATE TABLE IF NOT EXISTS credit_purchases (
  id INTEGER PRIMARY KEY AUTOINCREMENT, purchase_time TEXT NOT NULL, paid_amount REAL NOT NULL,
  currency TEXT NOT NULL, credits_received REAL NOT NULL, fees REAL NOT NULL DEFAULT 0,
