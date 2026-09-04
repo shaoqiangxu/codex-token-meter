@@ -33,7 +33,7 @@ systemctl start codex-meter-agent
 
 Do not run `backfill` unless importing pre-baseline history is intended.
 
-Windows agents run through a hidden `wscript.exe` launcher. To repair an installation made before hidden launching was added, run this once in an Administrator PowerShell window:
+Windows agents run through a hidden `wscript.exe` launcher. The following command upgrades an existing Windows agent in place, preserves its enrollment/configuration, and repairs hidden launching:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://token.xsqhub.com/install/windows-hide.ps1' | iex"
@@ -47,5 +47,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://token.xsqhu
 - Archived moves retain the source UUID and byte checkpoint.
 - Cached input/cache-write are input subsets; reasoning output is an output subset and is never added again to total.
 - When visible deltas exist, the agent's deterministic local tokenizer emits `ESTIMATED_LIVE`; exact usage reconciles and records the error. With no delta, the UI says that the response is generating and waits for exact usage.
+- An active session is a distinct `(host, parent-or-self conversation)` with a metering event in the last five minutes. Online devices use a separate 15-second heartbeat window.
+- Conversation labels come only from Codex's explicit `threads.name` display field. Project labels prefer Codex project metadata and Git remote repository names; generic folder names such as `repo` and `root` are not presented as projects.
 
 See `docs/OPERATIONS.md`, `docs/PRICING.md`, and `docs/SECURITY.md`.

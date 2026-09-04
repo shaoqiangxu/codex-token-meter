@@ -1,5 +1,5 @@
 const $ = selector => document.querySelector(selector);
-let state = {sessions: [], hosts: [], totals: {}, exchange_rate: {}};
+let state = {sessions: [], hosts: [], totals: {}, project_totals: [], exchange_rate: {}};
 
 function trimNumber(value, digits) {
   if (!Number.isFinite(Number(value))) return '0';
@@ -78,7 +78,7 @@ function render(snapshot) {
     card('当前生成中估算', pending && !totals.live_estimate ? '等待精确值' : token(totals.live_estimate), pending && !totals.live_estimate ? '生成完成后更新' : '仅可见文本估算') +
     card('总输入 / 输出', `${token(totals.input_tokens)}/${token(totals.output_tokens)}`, `推理输出${token(totals.reasoning_output_tokens)}`) +
     card('缓存读取 / 写入', `${token(totals.cached_input_tokens)}/${token(totals.cache_write_input_tokens)}`, `命中率${trimNumber(totals.cache_hit_rate || 0, 1)}%`) +
-    card('活跃会话 / 在线设备', `${totals.active_sessions || 0}/${totals.online_hosts || 0}`, '已按父会话聚拢') +
+    card('活跃会话 / 在线设备', `${totals.active_sessions || 0}/${totals.online_hosts || 0}`, '5分钟内有事件 · 按设备和父会话去重') +
     card('OpenAI API 等价', money(totals.api?.value), `${cny(totals.api_cny)} · 官方费率每日同步 · ${stamp(totals.api?.verified_at)}`) +
     card('Vercel 等价', money(totals.vercel?.value), `${cny(totals.vercel_cny)} · 模型目录每日同步 · ${stamp(totals.vercel?.verified_at)}`) +
     card('Codex Credits 等价', credits(totals.credits?.value), totals.credits_purchase_usd ? `购买均价${money(totals.credits_purchase_usd)}/${cny(totals.credits_purchase_cny)}` : '未录入购买批次') +
@@ -89,6 +89,17 @@ function render(snapshot) {
 }
 
 const sumFields = ['live_estimate', 'total_tokens', 'input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens', 'api_cost', 'vercel_cost', 'credits'];
+
+function displayProjectName(value, conversationName) {
+  const raw = String(value || '').trim();
+  const generic = !raw || ['repo', 'root', 'workspace', 'worktree'].includes(raw.toLowerCase()) || /^\d+$/.test(raw);
+  if (!generic) return raw;
+  const title = String(conversationName || '').trim();
+  const quotedProject = title.match(/[“"]([^“”"]{2,80})[”"]项目/i);
+  if (quotedProject) return quotedProject[1];
+  if (title && !/^会话[0-9a-f-]+$/i.test(title)) return title;
+  return '未归属项目';
+}
 
 function groupedSessions(rows) {
   const groups = new Map();
@@ -113,8 +124,9 @@ function groupedSessions(rows) {
   const result = [...groups.values()];
   for (const group of result) {
     const representative = group.root || group.latest || group.records[0];
-    group.project = representative.project || group.records.find(item => item.project)?.project || '未分类';
-    group.name = representative.name && representative.name !== group.project ? representative.name : `会话${shortID(group.root_id)}`;
+    const rawProject = representative.project || group.records.find(item => item.project)?.project || '';
+    group.name = representative.name && representative.name !== rawProject ? representative.name : `会话${shortID(group.root_id)}`;
+    group.project = displayProjectName(rawProject, group.name);
     group.model = representative.model || '-';
     group.reasoning_effort = representative.reasoning_effort || '-';
     group.status = (group.latest || representative).status || 'EXACT';
@@ -203,10 +215,34 @@ function renderGroups() {
       if (!projects.has(group.project)) projects.set(group.project, []);
       projects.get(group.project).push(group);
     }
-    const projectHTML = [...projects.entries()].map(([project, projectGroups]) => `<details class="project-group" open>
-      <summary><span>📁 ${esc(project)}</span><span class="project-count">${projectGroups.length}个会话 · ${projectGroups.reduce((number, group) => number + group.records.length, 0)}条记录</span></summary>
-      <div class="project-sessions">${projectGroups.map(sessionCard).join('')}</div>
-    </details>`).join('');
+    const projectHTML = [...projects.entries()].map(([project, projectGroups]) => {
+      const totals = {total_tokens: 0, api_cost: 0, vercel_cost: 0, credits: 0, records: 0};
+      for (const group of projectGroups) {
+        totals.total_tokens += Number(group.total_tokens || 0);
+        totals.api_cost += Number(group.api_cost || 0);
+        totals.vercel_cost += Number(group.vercel_cost || 0);
+        totals.credits += Number(group.credits || 0);
+        totals.records += group.records.length;
+      }
+      const exactTotals = (state.project_totals || []).find(item => item.host_id === host.host_id && item.project === project);
+      if (exactTotals) {
+        totals.total_tokens = Number(exactTotals.total_tokens || 0);
+        totals.api_cost = Number(exactTotals.api_cost || 0);
+        totals.vercel_cost = Number(exactTotals.vercel_cost || 0);
+        totals.credits = Number(exactTotals.credits || 0);
+        totals.records = Number(exactTotals.records || 0);
+      }
+      const sessionCount = exactTotals ? Number(exactTotals.sessions || 0) : projectGroups.length;
+      const fx = Number(state.exchange_rate?.rate || 0);
+      return `<details class="project-group" open>
+        <summary>
+          <span class="project-title">📁 ${esc(project)}</span>
+          <span class="project-totals"><span>Token ${token(totals.total_tokens)}</span><span>OpenAI ${money(totals.api_cost)}/${cny(totals.api_cost * fx)}</span><span>Vercel ${money(totals.vercel_cost)}/${cny(totals.vercel_cost * fx)}</span><span>${credits(totals.credits)}</span></span>
+          <span class="project-count">${sessionCount}个会话 · ${totals.records}条记录</span>
+        </summary>
+        <div class="project-sessions">${projectGroups.map(sessionCard).join('')}</div>
+      </details>`;
+    }).join('');
     const empty = projectHTML || '<div class="empty-device">此时间范围暂无会话，但设备仍在正常上报心跳。</div>';
     return `<details class="device-group" open>
       <summary><span class="device-icon">${icon}</span><span class="device-name">${esc(host.alias)}</span><span class="device-kind">${kind}</span><span class="pill ${host.online ? 'online' : 'offline'}">${host.online ? '在线' : '离线'}</span><span class="device-count">${hostGroups.length}个聚合会话 · ${rawCount}条原始记录</span></summary>
@@ -318,4 +354,4 @@ function startDashboard() {
 }
 
 if (typeof document !== 'undefined') startDashboard();
-if (typeof module !== 'undefined' && module.exports) module.exports = {token, groupedSessions};
+if (typeof module !== 'undefined' && module.exports) module.exports = {token, groupedSessions, displayProjectName};

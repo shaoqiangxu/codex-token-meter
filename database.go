@@ -49,6 +49,11 @@ CREATE TABLE IF NOT EXISTS sessions (
  live_estimate INTEGER NOT NULL DEFAULT 0, last_exact_at TEXT,
  PRIMARY KEY(host_id, conversation_id), FOREIGN KEY(host_id) REFERENCES agents(host_id)
 );
+CREATE TABLE IF NOT EXISTS session_metadata (
+ host_id TEXT NOT NULL, conversation_id TEXT NOT NULL, conversation_name TEXT,
+ project_name TEXT, updated_at TEXT NOT NULL,
+ PRIMARY KEY(host_id, conversation_id), FOREIGN KEY(host_id) REFERENCES agents(host_id)
+);
 CREATE TABLE IF NOT EXISTS conversation_counters (
  host_id TEXT NOT NULL, conversation_id TEXT NOT NULL, epoch INTEGER NOT NULL DEFAULT 0,
  input_tokens INTEGER NOT NULL, cached_input_tokens INTEGER NOT NULL,

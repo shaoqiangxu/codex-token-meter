@@ -37,9 +37,19 @@ type UsageEvent struct {
 	LiveEstimate         int64       `json:"live_estimate,omitempty"`
 }
 
+// SessionMetadata contains display-only identifiers. The agent intentionally
+// reads only Codex's explicit thread name and project/repository metadata; it
+// never sends prompts, previews, messages, or tool output.
+type SessionMetadata struct {
+	ConversationID   string `json:"conversation_id"`
+	ConversationName string `json:"conversation_name,omitempty"`
+	ProjectName      string `json:"project_name,omitempty"`
+}
+
 type IngestBatch struct {
-	HostID string       `json:"host_id"`
-	Events []UsageEvent `json:"events"`
+	HostID   string            `json:"host_id"`
+	Events   []UsageEvent      `json:"events"`
+	Metadata []SessionMetadata `json:"metadata,omitempty"`
 }
 
 type AgentConfig struct {
@@ -52,6 +62,8 @@ type AgentConfig struct {
 	MonitoringStartedAt time.Time `json:"monitoring_started_at"`
 	AbsolutePaths       bool      `json:"absolute_paths"`
 	seen                map[string]fileStamp
+	metadataSent        map[string]string
+	lastMetadataScan    time.Time
 }
 
 type fileStamp struct {

@@ -599,3 +599,83 @@ Cache writes are billed at 1.25x the uncached input token rate.`
 		t.Fatalf("unexpected OpenAI pricing: %+v", spec)
 	}
 }
+
+func TestCollectSessionMetadataUsesExplicitNameOnly(t *testing.T) {
+	home := filepath.Join(t.TempDir(), ".codex")
+	state, err := openSQLite(filepath.Join(home, "state_5.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = state.Exec(`CREATE TABLE threads (
+		id TEXT PRIMARY KEY,name TEXT,title TEXT,first_user_message TEXT,preview TEXT,
+		cwd TEXT,git_origin_url TEXT,project_id TEXT,agent_nickname TEXT,agent_path TEXT,updated_at_ms INTEGER
+	); CREATE TABLE projects(id TEXT PRIMARY KEY,name TEXT);`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = state.Exec(`INSERT INTO threads VALUES
+		('named','  显示任务名称'||char(10),'DO_NOT_UPLOAD_TITLE','DO_NOT_UPLOAD_PROMPT','DO_NOT_UPLOAD_PREVIEW','/tmp/repo','git@github.com:owner/useful-project.git','','','',3),
+		('agent','','DO_NOT_UPLOAD_TITLE_2','DO_NOT_UPLOAD_PROMPT_2','DO_NOT_UPLOAD_PREVIEW_2','/tmp/repo','git@github.com:owner/useful-project.git','','Russell','/private/path/retail_attention_clock_fix',2),
+		('unnamed','','DO_NOT_UPLOAD_TITLE_3','DO_NOT_UPLOAD_PROMPT_3','DO_NOT_UPLOAD_PREVIEW_3','/root','','','','',1)`)
+	state.Close()
+	items := collectSessionMetadata([]string{home})
+	if len(items) != 2 || items[0].ConversationID != "named" || items[0].ConversationName != "显示任务名称" || items[0].ProjectName != "useful-project" || items[1].ConversationName != "retail attention clock fix · Russell" {
+		t.Fatalf("unexpected safe metadata: %+v", items)
+	}
+	b, _ := json.Marshal(items)
+	if strings.Contains(string(b), "DO_NOT_UPLOAD") {
+		t.Fatal("non-display thread content escaped metadata boundary")
+	}
+	if got := effectiveProjectName("root", "你是“Codex Token Meter”项目的维护者"); got != "Codex Token Meter" {
+		t.Fatalf("quoted project inference=%q", got)
+	}
+}
+
+func TestSnapshotUsesParentDisplayMetadata(t *testing.T) {
+	s, done := testServerDB(t)
+	defer done()
+	now := time.Now().UTC()
+	e := UsageEvent{EventID: "named-event", HostID: "h", ConversationID: "child", ParentConversationID: "parent", SourceFileID: "parent", EventType: "exact_usage", Timestamp: now, TurnID: "turn", Model: "gpt-5.6-sol", Counts: counts(10, 2, 0, 3, 1), DataQuality: "EXACT", ParserVersion: parserVersion}
+	tx, _ := s.db.Begin()
+	if err := s.applyEvent(tx, e); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.applySessionMetadata(tx, "h", SessionMetadata{ConversationID: "parent", ConversationName: "真实任务名称", ProjectName: "真实项目名称"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := s.snapshotBetween(now.Add(-time.Minute), now.Add(time.Minute)).(map[string]any)
+	sessions := snapshot["sessions"].([]map[string]any)
+	if len(sessions) != 1 || sessions[0]["name"] != "真实任务名称" || sessions[0]["project"] != "真实项目名称" {
+		t.Fatalf("display metadata not joined: %+v", sessions)
+	}
+	projects := snapshot["project_totals"].([]map[string]any)
+	if len(projects) != 1 || projects[0]["project"] != "真实项目名称" || projects[0]["total_tokens"] != int64(13) {
+		t.Fatalf("project totals not computed: %+v", projects)
+	}
+}
+
+func TestActiveSessionsAreFiveMinuteParentRoots(t *testing.T) {
+	s, done := testServerDB(t)
+	defer done()
+	now := time.Now().UTC()
+	for _, row := range []struct {
+		id, parent string
+		at         time.Time
+	}{
+		{"child-a", "parent-a", now.Add(-time.Minute)},
+		{"child-b", "parent-a", now.Add(-2 * time.Minute)},
+		{"root-b", "", now.Add(-4 * time.Minute)},
+		{"stale", "", now.Add(-6 * time.Minute)},
+	} {
+		_, err := s.db.Exec("INSERT INTO sessions(host_id,conversation_id,parent_conversation_id,last_event_at)VALUES(?,?,?,?)", "h", row.id, nullstr(row.parent), row.at.Format(time.RFC3339Nano))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := s.activeSessionCount(now); got != 2 {
+		t.Fatalf("active roots=%d, want 2", got)
+	}
+}

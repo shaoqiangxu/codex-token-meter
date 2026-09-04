@@ -102,6 +102,14 @@ func updateParseContext(p map[string]any, pc *parseContext) {
 	if cwd, _ := p["cwd"].(string); cwd != "" && pc.projectID == "" {
 		pc.projectID, pc.repoName = projectFor(cwd)
 	}
+	if git, ok := p["git"].(map[string]any); ok {
+		if remote, _ := git["repository_url"].(string); remote != "" {
+			pc.projectID = stableID(strings.TrimSpace(remote))[:16]
+			if name := projectNameFromRemote(remote); name != "" {
+				pc.repoName = name
+			}
+		}
+	}
 	if ts, ok := p["thread_settings"].(map[string]any); ok {
 		if s, _ := ts["model"].(string); s != "" {
 			pc.model = s
@@ -186,7 +194,13 @@ func projectFor(cwd string) (string, string) {
 		identity = repo
 		if remote, err := exec.Command("git", "-C", root, "config", "--get", "remote.origin.url").Output(); err == nil && len(remote) < 2048 {
 			identity = strings.TrimSpace(string(remote))
+			if name := projectNameFromRemote(identity); name != "" {
+				repo = name
+			}
 		}
+	}
+	if genericProjectNames[strings.ToLower(repo)] {
+		repo = ""
 	}
 	return stableID(identity)[:16], repo
 }

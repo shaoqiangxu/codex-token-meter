@@ -94,7 +94,8 @@ func runAgent(ctx context.Context, configPath string, once, backfill bool) error
 }
 
 func sendHeartbeat(ctx context.Context, cfg *AgentConfig) error {
-	body, _ := json.Marshal(IngestBatch{HostID: cfg.HostID})
+	metadata := pendingSessionMetadata(cfg)
+	body, _ := json.Marshal(IngestBatch{HostID: cfg.HostID, Metadata: metadata})
 	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(cfg.ServerURL, "/")+"/api/ingest", bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -110,7 +111,35 @@ func sendHeartbeat(ctx context.Context, cfg *AgentConfig) error {
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("heartbeat HTTP %d", resp.StatusCode)
 	}
+	if cfg.metadataSent == nil {
+		cfg.metadataSent = map[string]string{}
+	}
+	for _, item := range metadata {
+		cfg.metadataSent[item.ConversationID] = metadataSignature(item)
+	}
 	return nil
+}
+
+func pendingSessionMetadata(cfg *AgentConfig) []SessionMetadata {
+	if !cfg.lastMetadataScan.IsZero() && time.Since(cfg.lastMetadataScan) < 30*time.Second {
+		return nil
+	}
+	cfg.lastMetadataScan = time.Now()
+	all := collectSessionMetadata(cfg.CodexHomes)
+	pending := make([]SessionMetadata, 0, len(all))
+	for _, item := range all {
+		if cfg.metadataSent == nil || cfg.metadataSent[item.ConversationID] != metadataSignature(item) {
+			pending = append(pending, item)
+		}
+	}
+	if len(pending) > 256 {
+		pending = pending[:256]
+	}
+	return pending
+}
+
+func metadataSignature(item SessionMetadata) string {
+	return item.ConversationName + "\x00" + item.ProjectName
 }
 
 func scanCodexFiles(db *sql.DB, cfg *AgentConfig, backfill bool) error {

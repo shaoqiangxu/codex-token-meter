@@ -121,7 +121,7 @@ func (s *server) ingest(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 	var b IngestBatch
-	if json.NewDecoder(r.Body).Decode(&b) != nil || b.HostID == "" || len(b.Events) > 256 {
+	if json.NewDecoder(r.Body).Decode(&b) != nil || b.HostID == "" || len(b.Events) > 256 || len(b.Metadata) > 256 {
 		http.Error(w, "bad batch", 400)
 		return
 	}
@@ -152,13 +152,35 @@ func (s *server) ingest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	for _, item := range b.Metadata {
+		if err = s.applySessionMetadata(tx, b.HostID, item); err != nil {
+			http.Error(w, "metadata ingest failed", 500)
+			return
+		}
+	}
 	_, _ = tx.Exec("UPDATE agents SET last_seen=? WHERE host_id=?", time.Now().UTC().Format(time.RFC3339Nano), b.HostID)
 	if err = tx.Commit(); err != nil {
 		http.Error(w, "db", 500)
 		return
 	}
 	s.hub.mark()
-	writeJSON(w, map[string]any{"accepted": len(b.Events)})
+	writeJSON(w, map[string]any{"accepted": len(b.Events), "metadata_accepted": len(b.Metadata)})
+}
+
+func (s *server) applySessionMetadata(tx *sql.Tx, hostID string, item SessionMetadata) error {
+	if item.ConversationID == "" || len(item.ConversationID) > 256 {
+		return errors.New("invalid conversation metadata")
+	}
+	name := cleanDisplayName(item.ConversationName, 100)
+	project := cleanDisplayName(item.ProjectName, 100)
+	if name == "" && project == "" {
+		return nil
+	}
+	_, err := tx.Exec(`INSERT INTO session_metadata(host_id,conversation_id,conversation_name,project_name,updated_at)
+		VALUES(?,?,?,?,?) ON CONFLICT(host_id,conversation_id) DO UPDATE SET
+		conversation_name=excluded.conversation_name,project_name=excluded.project_name,updated_at=excluded.updated_at`,
+		hostID, item.ConversationID, nullstr(name), nullstr(project), time.Now().UTC().Format(time.RFC3339Nano))
+	return err
 }
 
 func validUsageEvent(e UsageEvent) bool {

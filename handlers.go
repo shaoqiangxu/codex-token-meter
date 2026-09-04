@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -219,14 +220,23 @@ func (s *server) snapshotSince(since time.Time) any {
 	return s.snapshotBetween(since, time.Now().UTC().AddDate(100, 0, 0))
 }
 func (s *server) snapshotBetween(since, until time.Time) any {
-	rows, err := s.db.Query(`WITH u AS (SELECT host_id,conversation_id,SUM(input_tokens) input_tokens,SUM(cached_input_tokens) cached_input_tokens,SUM(cache_write_input_tokens) cache_write_input_tokens,SUM(output_tokens) output_tokens,SUM(reasoning_output_tokens) reasoning_output_tokens,SUM(total_tokens) total_tokens FROM usage_events WHERE timestamp>=? AND timestamp<? GROUP BY host_id,conversation_id) SELECT s.host_id,a.alias,COALESCE(a.platform,''),s.conversation_id,COALESCE(s.parent_conversation_id,''),COALESCE(s.repo_name,s.project_id,''),COALESCE(s.display_name,''),COALESCE(s.model,''),COALESCE(s.reasoning_effort,''),s.status,COALESCE(s.started_at,''),COALESCE(s.last_event_at,''),s.data_quality,s.model_context_window,COALESCE(u.input_tokens,0),COALESCE(u.cached_input_tokens,0),COALESCE(u.cache_write_input_tokens,0),COALESCE(u.output_tokens,0),COALESCE(u.reasoning_output_tokens,0),COALESCE(u.total_tokens,0),s.live_estimate FROM sessions s JOIN agents a ON a.host_id=s.host_id LEFT JOIN u ON u.host_id=s.host_id AND u.conversation_id=s.conversation_id WHERE u.total_tokens IS NOT NULL OR s.live_estimate>0 ORDER BY s.last_event_at DESC LIMIT 500`, since.Format(time.RFC3339Nano), until.Format(time.RFC3339Nano))
+	rows, err := s.db.Query(`WITH u AS (SELECT host_id,conversation_id,SUM(input_tokens) input_tokens,SUM(cached_input_tokens) cached_input_tokens,SUM(cache_write_input_tokens) cache_write_input_tokens,SUM(output_tokens) output_tokens,SUM(reasoning_output_tokens) reasoning_output_tokens,SUM(total_tokens) total_tokens FROM usage_events WHERE timestamp>=? AND timestamp<? GROUP BY host_id,conversation_id)
+		SELECT s.host_id,a.alias,COALESCE(a.platform,''),s.conversation_id,COALESCE(s.parent_conversation_id,''),
+		COALESCE(NULLIF(parentm.project_name,''),NULLIF(ownm.project_name,''),NULLIF(s.repo_name,''),s.project_id,''),
+		COALESCE(NULLIF(s.display_name,''),NULLIF(parentm.conversation_name,''),NULLIF(ownm.conversation_name,''),''),
+		COALESCE(s.model,''),COALESCE(s.reasoning_effort,''),s.status,COALESCE(s.started_at,''),COALESCE(s.last_event_at,''),s.data_quality,s.model_context_window,
+		COALESCE(u.input_tokens,0),COALESCE(u.cached_input_tokens,0),COALESCE(u.cache_write_input_tokens,0),COALESCE(u.output_tokens,0),COALESCE(u.reasoning_output_tokens,0),COALESCE(u.total_tokens,0),s.live_estimate
+		FROM sessions s JOIN agents a ON a.host_id=s.host_id
+		LEFT JOIN u ON u.host_id=s.host_id AND u.conversation_id=s.conversation_id
+		LEFT JOIN session_metadata ownm ON ownm.host_id=s.host_id AND ownm.conversation_id=s.conversation_id
+		LEFT JOIN session_metadata parentm ON parentm.host_id=s.host_id AND parentm.conversation_id=s.parent_conversation_id
+		WHERE u.total_tokens IS NOT NULL OR s.live_estimate>0 ORDER BY s.last_event_at DESC LIMIT 500`, since.Format(time.RFC3339Nano), until.Format(time.RFC3339Nano))
 	if err != nil {
 		return map[string]any{"error": "database unavailable"}
 	}
 	defer rows.Close()
 	var list []map[string]any
 	tot := TokenCounts{CacheWriteVisible: true}
-	activeRoots := map[string]struct{}{}
 	for rows.Next() {
 		var v sessionView
 		if rows.Scan(&v.HostID, &v.Host, &v.Platform, &v.ConversationID, &v.ParentID, &v.Project, &v.Name, &v.Model, &v.Effort, &v.Status, &v.StartedAt, &v.LastEvent, &v.Quality, &v.ContextWindow, &v.Input, &v.Cached, &v.CacheWrite, &v.Output, &v.Reasoning, &v.Total, &v.Live) != nil {
@@ -235,13 +245,6 @@ func (s *server) snapshotBetween(since, until time.Time) any {
 		last := parseTime(v.LastEvent)
 		if time.Since(last) > 30*time.Second && (v.Status == "ESTIMATED_LIVE" || v.Status == "LOWER_BOUND") {
 			v.Status = "STALE"
-		}
-		if time.Since(last) < 5*time.Minute {
-			root := v.ParentID
-			if root == "" {
-				root = v.ConversationID
-			}
-			activeRoots[v.HostID+"\x00"+root] = struct{}{}
 		}
 		tot.InputTokens += v.Input
 		tot.CachedInputTokens += v.Cached
@@ -274,8 +277,11 @@ func (s *server) snapshotBetween(since, until time.Time) any {
 		item["vercel_cost"] = c.Vercel.Value
 		item["credits"] = c.Credits.Value
 	}
+	projectTotals := s.projectTotalsBetween(since, until, rangeBySession)
+	tot = s.tokenTotalsBetween(since, until)
 	var online int
 	s.db.QueryRow("SELECT COUNT(*) FROM agents WHERE revoked_at IS NULL AND last_seen>=?", time.Now().Add(-15*time.Second).UTC().Format(time.RFC3339Nano)).Scan(&online)
+	active := s.activeSessionCount(time.Now().UTC())
 	api, vercel, credits := rangeTotal.API, rangeTotal.Vercel, rangeTotal.Credits
 	var paid, purchased float64
 	s.db.QueryRow("SELECT COALESCE(SUM(paid_amount+fees),0),COALESCE(SUM(credits_received),0) FROM credit_purchases").Scan(&paid, &purchased)
@@ -289,7 +295,102 @@ func (s *server) snapshotBetween(since, until time.Time) any {
 	if tot.InputTokens > 0 {
 		hit = float64(tot.CachedInputTokens) / float64(tot.InputTokens) * 100
 	}
-	return map[string]any{"generated_at": time.Now().UTC(), "range_start": since, "exchange_rate": fx, "hosts": s.hostViews(), "totals": map[string]any{"input_tokens": tot.InputTokens, "cached_input_tokens": tot.CachedInputTokens, "cache_write_input_tokens": tot.CacheWriteInputTokens, "output_tokens": tot.OutputTokens, "reasoning_output_tokens": tot.ReasoningOutputTokens, "total_tokens": tot.TotalTokens, "live_estimate": sumLive(list), "cache_hit_rate": hit, "active_sessions": len(activeRoots), "online_hosts": online, "api": api, "vercel": vercel, "credits": credits, "credits_purchase_usd": creditUSD, "api_cny": apiCNY, "vercel_cny": vercelCNY, "credits_purchase_cny": creditsCNY, "rmb_equivalent": apiCNY, "actual_incremental_cash": 0}, "sessions": list}
+	return map[string]any{"generated_at": time.Now().UTC(), "range_start": since, "exchange_rate": fx, "hosts": s.hostViews(), "totals": map[string]any{"input_tokens": tot.InputTokens, "cached_input_tokens": tot.CachedInputTokens, "cache_write_input_tokens": tot.CacheWriteInputTokens, "output_tokens": tot.OutputTokens, "reasoning_output_tokens": tot.ReasoningOutputTokens, "total_tokens": tot.TotalTokens, "live_estimate": s.liveEstimateTotal(), "cache_hit_rate": hit, "active_sessions": active, "active_window_seconds": 300, "online_hosts": online, "online_window_seconds": 15, "api": api, "vercel": vercel, "credits": credits, "credits_purchase_usd": creditUSD, "api_cny": apiCNY, "vercel_cny": vercelCNY, "credits_purchase_cny": creditsCNY, "rmb_equivalent": apiCNY, "actual_incremental_cash": 0}, "project_totals": projectTotals, "sessions": list}
+}
+
+func (s *server) tokenTotalsBetween(since, until time.Time) TokenCounts {
+	result := TokenCounts{CacheWriteVisible: true}
+	var visible int
+	err := s.db.QueryRow(`SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(cached_input_tokens),0),COALESCE(SUM(cache_write_input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(reasoning_output_tokens),0),COALESCE(SUM(total_tokens),0),COALESCE(MIN(cache_write_visible),1) FROM usage_events WHERE timestamp>=? AND timestamp<?`, since.Format(time.RFC3339Nano), until.Format(time.RFC3339Nano)).Scan(&result.InputTokens, &result.CachedInputTokens, &result.CacheWriteInputTokens, &result.OutputTokens, &result.ReasoningOutputTokens, &result.TotalTokens, &visible)
+	if err == nil {
+		result.CacheWriteVisible = visible != 0
+	}
+	return result
+}
+
+func (s *server) liveEstimateTotal() int64 {
+	var total int64
+	_ = s.db.QueryRow("SELECT COALESCE(SUM(live_estimate),0) FROM sessions").Scan(&total)
+	return total
+}
+
+type projectAggregate struct {
+	HostID, Project                                     string
+	TotalTokens, InputTokens, OutputTokens, RecordCount int64
+	APICost, VercelCost, Credits                        float64
+	roots                                               map[string]struct{}
+}
+
+func (s *server) projectTotalsBetween(since, until time.Time, costs map[string]providerCosts) []map[string]any {
+	rows, err := s.db.Query(`WITH u AS (
+		SELECT host_id,conversation_id,SUM(input_tokens) input_tokens,SUM(output_tokens) output_tokens,SUM(total_tokens) total_tokens
+		FROM usage_events WHERE timestamp>=? AND timestamp<? GROUP BY host_id,conversation_id
+	) SELECT s.host_id,s.conversation_id,COALESCE(s.parent_conversation_id,''),
+		COALESCE(NULLIF(parentm.project_name,''),NULLIF(ownm.project_name,''),NULLIF(s.repo_name,''),s.project_id,''),
+		COALESCE(NULLIF(s.display_name,''),NULLIF(parentm.conversation_name,''),NULLIF(ownm.conversation_name,''),''),
+		u.input_tokens,u.output_tokens,u.total_tokens
+		FROM u JOIN sessions s ON s.host_id=u.host_id AND s.conversation_id=u.conversation_id
+		LEFT JOIN session_metadata ownm ON ownm.host_id=s.host_id AND ownm.conversation_id=s.conversation_id
+		LEFT JOIN session_metadata parentm ON parentm.host_id=s.host_id AND parentm.conversation_id=s.parent_conversation_id`, since.Format(time.RFC3339Nano), until.Format(time.RFC3339Nano))
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	groups := map[string]*projectAggregate{}
+	for rows.Next() {
+		var hostID, conversationID, parentID, rawProject, conversationName string
+		var input, output, total int64
+		if rows.Scan(&hostID, &conversationID, &parentID, &rawProject, &conversationName, &input, &output, &total) != nil {
+			continue
+		}
+		project := effectiveProjectName(rawProject, conversationName)
+		key := hostID + "\x00" + project
+		group := groups[key]
+		if group == nil {
+			group = &projectAggregate{HostID: hostID, Project: project, roots: map[string]struct{}{}}
+			groups[key] = group
+		}
+		group.InputTokens += input
+		group.OutputTokens += output
+		group.TotalTokens += total
+		group.RecordCount++
+		root := parentID
+		if root == "" {
+			root = conversationID
+		}
+		group.roots[root] = struct{}{}
+		cost := costs[hostID+"\x00"+conversationID]
+		group.APICost += cost.API.Value
+		group.VercelCost += cost.Vercel.Value
+		group.Credits += cost.Credits.Value
+	}
+	ordered := make([]*projectAggregate, 0, len(groups))
+	for _, group := range groups {
+		ordered = append(ordered, group)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].HostID != ordered[j].HostID {
+			return ordered[i].HostID < ordered[j].HostID
+		}
+		return ordered[i].TotalTokens > ordered[j].TotalTokens
+	})
+	result := make([]map[string]any, 0, len(ordered))
+	for _, group := range ordered {
+		result = append(result, map[string]any{"host_id": group.HostID, "project": group.Project, "sessions": len(group.roots), "records": group.RecordCount, "total_tokens": group.TotalTokens, "input_tokens": group.InputTokens, "output_tokens": group.OutputTokens, "api_cost": group.APICost, "vercel_cost": group.VercelCost, "credits": group.Credits})
+	}
+	return result
+}
+
+func (s *server) activeSessionCount(now time.Time) int {
+	var active int
+	cutoff := now.Add(-5 * time.Minute).Format(time.RFC3339Nano)
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM (
+		SELECT s.host_id,COALESCE(NULLIF(s.parent_conversation_id,''),s.conversation_id) root_id
+		FROM sessions s JOIN agents a ON a.host_id=s.host_id
+		WHERE a.revoked_at IS NULL AND s.last_event_at>=?
+		GROUP BY s.host_id,root_id
+	)`, cutoff).Scan(&active)
+	return active
 }
 
 func (s *server) hostViews() []map[string]any {
@@ -308,16 +409,6 @@ func (s *server) hostViews() []map[string]any {
 	}
 	return result
 }
-func sumLive(list []map[string]any) int64 {
-	var n int64
-	for _, v := range list {
-		if x, ok := v["live_estimate"].(int64); ok {
-			n += x
-		}
-	}
-	return n
-}
-
 func (s *server) static(w http.ResponseWriter, r *http.Request) {
 	name := "web/index.html"
 	if r.URL.Path != "/" {
@@ -565,21 +656,34 @@ Start-ScheduledTask -TaskName 'CodexTokenMeter'; Write-Host 'Codex Token Meter i
 }
 
 func (s *server) windowsHideRepair(w http.ResponseWriter, r *http.Request) {
+	name := "codex-meter-windows-amd64.exe"
+	sum, err := fileSHA(filepath.Join(s.cfg.ArtifactDir, name))
+	if err != nil {
+		http.Error(w, "artifact unavailable", 503)
+		return
+	}
+	base := strings.TrimRight(s.cfg.PublicURL, "/")
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	io.WriteString(w, `$ErrorActionPreference='Stop'
+	fmt.Fprintf(w, `$ErrorActionPreference='Stop'
 $d=Join-Path $env:LOCALAPPDATA 'CodexTokenMeter'
 $exe=Join-Path $d 'codex-meter.exe'; $cfg=Join-Path $d 'agent.json'
 if(!(Test-Path -LiteralPath $exe) -or !(Test-Path -LiteralPath $cfg)){throw 'Codex Token Meter is not installed for this user'}
+$next=Join-Path $d 'codex-meter.new.exe'
+Invoke-WebRequest '%s/downloads/%s' -OutFile $next
+if((Get-FileHash $next -Algorithm SHA256).Hash.ToLower() -ne '%s'){Remove-Item $next -Force; throw 'SHA-256 mismatch'}
 $launcher=Join-Path $d 'agent.vbs'
 $vbs='CreateObject("Wscript.Shell").Run """'+$exe+'"" agent --config ""'+$cfg+'""", 0, False'
 Set-Content -LiteralPath $launcher -Value $vbs -Encoding ASCII
 Stop-ScheduledTask -TaskName 'CodexTokenMeter' -ErrorAction SilentlyContinue
+$running=Get-Process -Name 'codex-meter' -ErrorAction SilentlyContinue | Where-Object {$_.Path -eq $exe}
+$running | Stop-Process -Force
+Move-Item -LiteralPath $next -Destination $exe -Force
 $action=New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot 'System32\wscript.exe') -Argument ('"'+$launcher+'"')
-Set-ScheduledTask -TaskName 'CodexTokenMeter' -Action $action | Out-Null
-Get-Process -Name 'codex-meter' -ErrorAction SilentlyContinue | Stop-Process -Force
+$trigger=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+Register-ScheduledTask -TaskName 'CodexTokenMeter' -Action $action -Trigger $trigger -Force | Out-Null
 Start-ScheduledTask -TaskName 'CodexTokenMeter'
-Write-Host 'Codex Token Meter now runs hidden in the background.'
-`)
+Write-Host 'Codex Token Meter updated and running hidden in the background.'
+`, base, name, sum)
 }
 
 func (s *server) linuxInstaller(w http.ResponseWriter, r *http.Request) {

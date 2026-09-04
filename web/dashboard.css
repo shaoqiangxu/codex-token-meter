@@ -6,7 +6,7 @@
 .device-group[open]>summary{border-radius:12px 12px 0 0;border-bottom:1px solid var(--line)}
 .device-icon{font-size:22px}.device-name{flex:1}.device-kind{color:var(--blue);font-size:12px}.device-count{color:var(--muted);font-size:12px;font-weight:500}
 .project-list{padding:12px;display:grid;gap:10px}.project-group{background:#101b2d}
-.project-group>summary{padding:11px 14px;font-weight:700}.project-group>summary .project-count{margin-left:auto;color:var(--muted);font-size:12px;font-weight:500}
+.project-group>summary{padding:11px 14px;font-weight:700;flex-wrap:wrap}.project-title{min-width:180px}.project-totals{display:flex;align-items:center;gap:12px;color:#8ed8ff;font-size:12px;font-weight:600;flex-wrap:wrap}.project-group>summary .project-count{margin-left:auto;color:var(--muted);font-size:12px;font-weight:500;white-space:nowrap}
 .project-sessions{padding:0 10px 10px;display:grid;gap:9px}
 .session-card{border:1px solid #29405e;background:linear-gradient(135deg,#14233a,#101b2d);border-radius:10px;padding:13px}
 .session-heading{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.session-title{font-weight:750;font-size:15px}.session-id{font-family:ui-monospace,monospace;color:var(--muted);font-size:11px}.session-time{margin-left:auto;color:var(--muted);font-size:12px}
@@ -17,3 +17,4 @@
 .pricing-note{font-size:11px;color:var(--muted)}
 @media(max-width:1250px){.session-metrics{grid-template-columns:repeat(4,1fr)}}
 @media(max-width:700px){.session-groups{padding:8px}.device-group>summary{padding:12px}.device-kind{display:none}.session-metrics{grid-template-columns:repeat(2,1fr)}.session-time{width:100%;margin-left:0}}
+@media(max-width:900px){.project-title{width:100%}.project-count{margin-left:0!important}.project-totals{width:100%;gap:8px 12px}}
