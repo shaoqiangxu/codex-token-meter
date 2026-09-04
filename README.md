@@ -47,6 +47,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://token.xsqhu
 - Archived moves retain the source UUID and byte checkpoint.
 - Cached input/cache-write are input subsets; reasoning output is an output subset and is never added again to total.
 - When visible deltas exist, the agent's deterministic local tokenizer emits `ESTIMATED_LIVE`; exact usage reconciles and records the error. With no delta, the UI says that the response is generating and waits for exact usage.
+- SSE updates patch existing numeric DOM nodes in place. Fold state and text selection are preserved; the structural tree changes only for a new/removed logical session, a project assignment change, or an explicit filter/range action.
+- The meter daemon never invokes an LLM. It reads already-produced local numeric telemetry and sends it to this server; API/Vercel amounts are comparison prices rather than monitoring traffic.
 - An active session is a distinct `(host, parent-or-self conversation)` with a metering event in the last five minutes. Online devices use a separate 15-second heartbeat window.
 - Conversation labels come only from Codex's explicit `threads.name` display field. Project labels prefer Codex project metadata and Git remote repository names; generic folder names such as `repo` and `root` are not presented as projects.
 

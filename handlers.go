@@ -267,7 +267,7 @@ func (s *server) snapshotBetween(since, until time.Time) any {
 		if name == "" {
 			name = v.Project
 		}
-		list = append(list, map[string]any{"host_id": v.HostID, "host": v.Host, "platform": v.Platform, "conversation_id": v.ConversationID, "parent_conversation_id": v.ParentID, "project": v.Project, "name": name, "model": v.Model, "reasoning_effort": v.Effort, "status": v.Status, "started_at": v.StartedAt, "last_event_at": v.LastEvent, "data_quality": v.Quality, "model_context_window": v.ContextWindow, "input_tokens": v.Input, "cached_input_tokens": v.Cached, "cache_write_input_tokens": v.CacheWrite, "output_tokens": v.Output, "reasoning_output_tokens": v.Reasoning, "total_tokens": v.Total, "live_estimate": v.Live, "cache_hit_rate": hit, "context_percent": ctx})
+		list = append(list, map[string]any{"host_id": v.HostID, "host": v.Host, "platform": v.Platform, "conversation_id": v.ConversationID, "parent_conversation_id": v.ParentID, "project": v.Project, "name": name, "model": v.Model, "reasoning_effort": v.Effort, "status": v.Status, "started_at": v.StartedAt, "last_event_at": v.LastEvent, "data_quality": v.Quality, "cache_write_visible": v.Quality != "CACHE_WRITE_UNKNOWN", "model_context_window": v.ContextWindow, "input_tokens": v.Input, "cached_input_tokens": v.Cached, "cache_write_input_tokens": v.CacheWrite, "output_tokens": v.Output, "reasoning_output_tokens": v.Reasoning, "total_tokens": v.Total, "live_estimate": v.Live, "cache_hit_rate": hit, "context_percent": ctx})
 	}
 	rows.Close()
 	rangeTotal, rangeBySession := rangeCosts(s.db, since, until)
@@ -295,7 +295,7 @@ func (s *server) snapshotBetween(since, until time.Time) any {
 	if tot.InputTokens > 0 {
 		hit = float64(tot.CachedInputTokens) / float64(tot.InputTokens) * 100
 	}
-	return map[string]any{"generated_at": time.Now().UTC(), "range_start": since, "exchange_rate": fx, "hosts": s.hostViews(), "totals": map[string]any{"input_tokens": tot.InputTokens, "cached_input_tokens": tot.CachedInputTokens, "cache_write_input_tokens": tot.CacheWriteInputTokens, "output_tokens": tot.OutputTokens, "reasoning_output_tokens": tot.ReasoningOutputTokens, "total_tokens": tot.TotalTokens, "live_estimate": s.liveEstimateTotal(), "cache_hit_rate": hit, "active_sessions": active, "active_window_seconds": 300, "online_hosts": online, "online_window_seconds": 15, "api": api, "vercel": vercel, "credits": credits, "credits_purchase_usd": creditUSD, "api_cny": apiCNY, "vercel_cny": vercelCNY, "credits_purchase_cny": creditsCNY, "rmb_equivalent": apiCNY, "actual_incremental_cash": 0}, "project_totals": projectTotals, "sessions": list}
+	return map[string]any{"generated_at": time.Now().UTC(), "range_start": since, "exchange_rate": fx, "hosts": s.hostViews(), "totals": map[string]any{"input_tokens": tot.InputTokens, "cached_input_tokens": tot.CachedInputTokens, "cache_write_input_tokens": tot.CacheWriteInputTokens, "cache_write_visible": tot.CacheWriteVisible, "output_tokens": tot.OutputTokens, "reasoning_output_tokens": tot.ReasoningOutputTokens, "total_tokens": tot.TotalTokens, "live_estimate": s.liveEstimateTotal(), "cache_hit_rate": hit, "active_sessions": active, "active_window_seconds": 300, "online_hosts": online, "online_window_seconds": 15, "api": api, "vercel": vercel, "credits": credits, "credits_purchase_usd": creditUSD, "api_cny": apiCNY, "vercel_cny": vercelCNY, "credits_purchase_cny": creditsCNY, "rmb_equivalent": apiCNY, "actual_incremental_cash": 0}, "project_totals": projectTotals, "sessions": list}
 }
 
 func (s *server) tokenTotalsBetween(since, until time.Time) TokenCounts {
@@ -638,10 +638,11 @@ func (s *server) windowsInstaller(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	base := strings.TrimRight(s.cfg.PublicURL, "/")
+	download := versionedArtifactURL(base, name, sum)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	fmt.Fprintf(w, `$ErrorActionPreference='Stop'
 $d=Join-Path $env:LOCALAPPDATA 'CodexTokenMeter'; New-Item -ItemType Directory -Force $d | Out-Null
-$exe=Join-Path $d 'codex-meter.exe'; Invoke-WebRequest '%s/downloads/%s' -OutFile $exe
+$exe=Join-Path $d 'codex-meter.exe'; Invoke-WebRequest '%s' -OutFile $exe
 if((Get-FileHash $exe -Algorithm SHA256).Hash.ToLower() -ne '%s'){throw 'SHA-256 mismatch'}
 & $exe enroll --server '%s' --token '%s' --platform windows --config (Join-Path $d 'agent.json')
 $cfg=Join-Path $d 'agent.json'; icacls $cfg /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
@@ -652,7 +653,7 @@ $action=New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot 'System32\ws
 $trigger=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 Register-ScheduledTask -TaskName 'CodexTokenMeter' -Action $action -Trigger $trigger -Force | Out-Null
 Start-ScheduledTask -TaskName 'CodexTokenMeter'; Write-Host 'Codex Token Meter installed.'
-`, base, name, sum, base, token)
+`, download, sum, base, token)
 }
 
 func (s *server) windowsHideRepair(w http.ResponseWriter, r *http.Request) {
@@ -663,13 +664,14 @@ func (s *server) windowsHideRepair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	base := strings.TrimRight(s.cfg.PublicURL, "/")
+	download := versionedArtifactURL(base, name, sum)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	fmt.Fprintf(w, `$ErrorActionPreference='Stop'
 $d=Join-Path $env:LOCALAPPDATA 'CodexTokenMeter'
 $exe=Join-Path $d 'codex-meter.exe'; $cfg=Join-Path $d 'agent.json'
 if(!(Test-Path -LiteralPath $exe) -or !(Test-Path -LiteralPath $cfg)){throw 'Codex Token Meter is not installed for this user'}
 $next=Join-Path $d 'codex-meter.new.exe'
-Invoke-WebRequest '%s/downloads/%s' -OutFile $next
+Invoke-WebRequest '%s' -OutFile $next
 if((Get-FileHash $next -Algorithm SHA256).Hash.ToLower() -ne '%s'){Remove-Item $next -Force; throw 'SHA-256 mismatch'}
 $launcher=Join-Path $d 'agent.vbs'
 $vbs='CreateObject("Wscript.Shell").Run """'+$exe+'"" agent --config ""'+$cfg+'""", 0, False'
@@ -683,7 +685,7 @@ $trigger=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 Register-ScheduledTask -TaskName 'CodexTokenMeter' -Action $action -Trigger $trigger -Force | Out-Null
 Start-ScheduledTask -TaskName 'CodexTokenMeter'
 Write-Host 'Codex Token Meter updated and running hidden in the background.'
-`, base, name, sum)
+`, download, sum)
 }
 
 func (s *server) linuxInstaller(w http.ResponseWriter, r *http.Request) {
@@ -693,15 +695,23 @@ func (s *server) linuxInstaller(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	base := strings.TrimRight(s.cfg.PublicURL, "/")
-	name := "codex-meter-linux-amd64"
-	sum, _ := fileSHA(filepath.Join(s.cfg.ArtifactDir, name))
+	amd64Sum, err := fileSHA(filepath.Join(s.cfg.ArtifactDir, "codex-meter-linux-amd64"))
+	if err != nil {
+		http.Error(w, "artifact unavailable", 503)
+		return
+	}
+	arm64Sum, err := fileSHA(filepath.Join(s.cfg.ArtifactDir, "codex-meter-linux-arm64"))
+	if err != nil {
+		http.Error(w, "artifact unavailable", 503)
+		return
+	}
 	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
 	fmt.Fprintf(w, `#!/bin/sh
 set -eu
 [ "$(id -u)" = 0 ] || { echo 'run through sudo'; exit 1; }
 run_user=${SUDO_USER:-root}; run_group=$(id -gn "$run_user")
-case "$(uname -m)" in x86_64|amd64) a=amd64;; aarch64|arm64) a=arm64;; *) echo unsupported; exit 1;; esac
-n="codex-meter-linux-$a"; curl -fsSLo /usr/local/bin/codex-meter "%s/downloads/$n"; case "$a" in amd64) sum='%s';; *) sum=$(curl -fsSL "%s/downloads/$n.sha256" | awk '{print $1}');; esac; echo "$sum  /usr/local/bin/codex-meter" | sha256sum -c -; chmod 0755 /usr/local/bin/codex-meter
+case "$(uname -m)" in x86_64|amd64) a=amd64; sum='%s';; aarch64|arm64) a=arm64; sum='%s';; *) echo unsupported; exit 1;; esac
+n="codex-meter-linux-$a"; curl -fsSLo /usr/local/bin/codex-meter "%s/downloads/$n?sha256=$sum"; echo "$sum  /usr/local/bin/codex-meter" | sha256sum -c -; chmod 0755 /usr/local/bin/codex-meter
 /usr/local/bin/codex-meter enroll --server '%s' --token '%s' --platform linux --config /etc/codex-token-meter/agent.json
 install -d -m 0700 -o "$run_user" -g "$run_group" /var/lib/codex-token-meter/agent
 chown root:"$run_group" /etc/codex-token-meter; chmod 0750 /etc/codex-token-meter
@@ -722,7 +732,7 @@ PrivateTmp=true
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload; systemctl enable --now codex-meter-agent
-`, base, sum, base, base, token)
+`, amd64Sum, arm64Sum, base, base, token)
 }
 func (s *server) validEnrollment(token, platform string) bool {
 	var n int
@@ -735,7 +745,12 @@ func (s *server) download(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	http.ServeFile(w, r, filepath.Join(s.cfg.ArtifactDir, name))
+}
+
+func versionedArtifactURL(base, name, sum string) string {
+	return strings.TrimRight(base, "/") + "/downloads/" + name + "?sha256=" + sum
 }
 func fileSHA(path string) (string, error) {
 	f, e := os.Open(path)

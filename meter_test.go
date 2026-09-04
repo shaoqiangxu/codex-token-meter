@@ -20,6 +20,33 @@ func counts(i, c, w, o, r int64) TokenCounts {
 	return TokenCounts{InputTokens: i, CachedInputTokens: c, CacheWriteInputTokens: w, OutputTokens: o, ReasoningOutputTokens: r, TotalTokens: i + o, CacheWriteVisible: true}
 }
 
+func TestArtifactDownloadsAreVersionedAndNotCached(t *testing.T) {
+	dir := t.TempDir()
+	name := "codex-meter-windows-amd64.exe"
+	payload := []byte("release-binary")
+	if err := os.WriteFile(filepath.Join(dir, name), payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum, err := fileSHA(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &server{cfg: ServerConfig{ArtifactDir: dir, PublicURL: "https://token.example/"}}
+
+	repair := httptest.NewRecorder()
+	s.windowsHideRepair(repair, httptest.NewRequest(http.MethodGet, "/install/windows-hide.ps1", nil))
+	wantURL := "https://token.example/downloads/" + name + "?sha256=" + sum
+	if repair.Code != http.StatusOK || !strings.Contains(repair.Body.String(), wantURL) {
+		t.Fatalf("repair installer is not tied to artifact hash: status=%d body=%q", repair.Code, repair.Body.String())
+	}
+
+	download := httptest.NewRecorder()
+	s.download(download, httptest.NewRequest(http.MethodGet, "/downloads/"+name+"?sha256="+sum, nil))
+	if download.Code != http.StatusOK || download.Header().Get("Cache-Control") != "no-store" || download.Body.String() != string(payload) {
+		t.Fatalf("download response mismatch: status=%d cache=%q body=%q", download.Code, download.Header().Get("Cache-Control"), download.Body.String())
+	}
+}
+
 func TestLoginCSRFIsServerRendered(t *testing.T) {
 	const password = "correct-horse-battery-staple"
 	hash, err := hashPassword(password)
@@ -654,6 +681,10 @@ func TestSnapshotUsesParentDisplayMetadata(t *testing.T) {
 	projects := snapshot["project_totals"].([]map[string]any)
 	if len(projects) != 1 || projects[0]["project"] != "真实项目名称" || projects[0]["total_tokens"] != int64(13) {
 		t.Fatalf("project totals not computed: %+v", projects)
+	}
+	totals := snapshot["totals"].(map[string]any)
+	if totals["cache_write_visible"] != true || sessions[0]["cache_write_visible"] != true {
+		t.Fatalf("cache-write visibility missing: totals=%+v session=%+v", totals, sessions[0])
 	}
 }
 

@@ -35,3 +35,5 @@ Display names are obtained separately from the local Codex state database. The a
 Some derived sub-conversations in current Codex logs are identified as `ctco_*` or `fco_*` and do not carry an explicit parent field. For these verified forms only, the containing main log's stable conversation UUID is used as the parent. A source-log watermark shared by all conversations in that file removes their copied cumulative prefix; file truncation advances the source epoch.
 
 Parser version: `codex-jsonl-v1`. Unknown or malformed records are skipped without stopping collection. A partial final line is held until its newline arrives.
+
+Cache-write visibility is tracked separately from its numeric value. An explicit zero is displayed as zero; only a genuinely absent field is displayed as unavailable.

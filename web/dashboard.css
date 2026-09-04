@@ -15,6 +15,7 @@
 .child-records{margin-top:10px;background:#0a1423}.child-records>summary{padding:9px 11px;color:var(--muted);font-size:12px}.child-records[open]>summary{border-bottom:1px solid var(--line)}
 .child-records .table-wrap{border-top:0;max-height:420px}.child-records th{top:0}.detail-button{padding:5px 9px;font-size:11px}.empty-device{padding:18px;color:var(--muted)}
 .pricing-note{font-size:11px;color:var(--muted)}
+.panel-explain{margin-top:4px;color:var(--muted);font-size:12px;font-weight:400}
 @media(max-width:1250px){.session-metrics{grid-template-columns:repeat(4,1fr)}}
 @media(max-width:700px){.session-groups{padding:8px}.device-group>summary{padding:12px}.device-kind{display:none}.session-metrics{grid-template-columns:repeat(2,1fr)}.session-time{width:100%;margin-left:0}}
 @media(max-width:900px){.project-title{width:100%}.project-count{margin-left:0!important}.project-totals{width:100%;gap:8px 12px}}

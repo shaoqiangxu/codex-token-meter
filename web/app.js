@@ -1,5 +1,7 @@
 const $ = selector => document.querySelector(selector);
 let state = {sessions: [], hosts: [], totals: {}, project_totals: [], exchange_rate: {}};
+let renderedStructure = '';
+let structurePending = false;
 
 function trimNumber(value, digits) {
   if (!Number.isFinite(Number(value))) return '0';
@@ -10,10 +12,14 @@ function token(value) {
   const number = Number(value || 0);
   const absolute = Math.abs(number);
   if (absolute >= 1000000) {
-    const digits = absolute < 10000000 ? 2 : absolute < 100000000 ? 1 : 0;
-    return `${trimNumber(number / 1000000, digits)}M`;
+    return `${(number / 1000000).toFixed(4)}M`;
   }
   return String(Math.round(number));
+}
+
+function tokenM(value) {
+  const number = Number(value || 0);
+  return `${(number / 1000000).toFixed(4)}M`;
 }
 
 function money(value) {
@@ -60,32 +66,82 @@ function duration(value) {
 function stamp(value) {
   if (!value) return '未验证';
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? esc(value) : date.toLocaleString('zh-CN', {hour12: false});
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', {hour12: false});
 }
 
-function card(label, value, note = '') {
-  return `<div class="card"><div class="label">${label}</div><div class="value">${value}</div><div class="note">${note}</div></div>`;
+function card(item) {
+  return `<div class="card" data-card="${esc(item.key)}"><div class="label">${esc(item.label)}</div><div class="value" data-card-value>${esc(item.value)}</div><div class="note" data-card-note>${esc(item.note)}</div></div>`;
 }
 
-function render(snapshot) {
-  state = snapshot;
+function selectionTouches(element) {
+  if (typeof document === 'undefined' || !element) return false;
+  const selection = document.getSelection?.();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return false;
+  try {
+    return selection.getRangeAt(0).intersectsNode(element);
+  } catch (_) {
+    return false;
+  }
+}
+
+function updateText(element, value) {
+  if (!element || selectionTouches(element)) return;
+  const next = String(value ?? '');
+  if (element.textContent !== next) element.textContent = next;
+}
+
+function dashboardCards(snapshot) {
   const totals = snapshot.totals || {};
   const fx = snapshot.exchange_rate || {};
-  const pending = (snapshot.sessions || []).some(item => item.status === 'LOWER_BOUND');
+  const activeCutoff = Date.now() - 5 * 60 * 1000;
+  const pending = (snapshot.sessions || []).some(item => {
+    const quality = item.data_quality || item.status;
+    const lastEvent = new Date(item.last_event_at || 0).getTime();
+    return (quality === 'LOWER_BOUND' || quality === 'ESTIMATED_LIVE') && lastEvent >= activeCutoff;
+  });
   const fxState = fx.stale ? '汇率已过期' : '每6小时同步';
-  $('#cards').innerHTML =
-    card('今日精确 Token', token(totals.total_tokens), '已结算 EXACT') +
-    card('当前生成中估算', pending && !totals.live_estimate ? '等待精确值' : token(totals.live_estimate), pending && !totals.live_estimate ? '生成完成后更新' : '仅可见文本估算') +
-    card('总输入 / 输出', `${token(totals.input_tokens)}/${token(totals.output_tokens)}`, `推理输出${token(totals.reasoning_output_tokens)}`) +
-    card('缓存读取 / 写入', `${token(totals.cached_input_tokens)}/${token(totals.cache_write_input_tokens)}`, `命中率${trimNumber(totals.cache_hit_rate || 0, 1)}%`) +
-    card('活跃会话 / 在线设备', `${totals.active_sessions || 0}/${totals.online_hosts || 0}`, '5分钟内有事件 · 按设备和父会话去重') +
-    card('OpenAI API 等价', money(totals.api?.value), `${cny(totals.api_cny)} · 官方费率每日同步 · ${stamp(totals.api?.verified_at)}`) +
-    card('Vercel 等价', money(totals.vercel?.value), `${cny(totals.vercel_cny)} · 模型目录每日同步 · ${stamp(totals.vercel?.verified_at)}`) +
-    card('Codex Credits 等价', credits(totals.credits?.value), totals.credits_purchase_usd ? `购买均价${money(totals.credits_purchase_usd)}/${cny(totals.credits_purchase_cny)}` : '未录入购买批次') +
-    card('实时 USD/CNY', fx.rate ? `1USD=${cny(fx.rate)}` : '等待汇率', `ECB ${fx.rate_date || '-'} · ${fxState}`) +
-    card('实际新增现金支出', money(totals.actual_incremental_cash), '套餐内会话为0');
-  renderGroups();
-  $('#updated').textContent = `最后更新 ${new Date(snapshot.generated_at).toLocaleString('zh-CN', {hour12: false})}`;
+  const live = Number(totals.live_estimate || 0);
+  const generatingValue = live > 0 ? tokenM(live) : pending ? '日志不可估算' : '0.0000M';
+  const generatingNote = live > 0 ? '本地文本增量估算 · 完成后校准' : pending ? '无文本增量；完成后记入精确值' : '当前没有待结算输出';
+  const writeVisible = totals.cache_write_visible !== false;
+  const writeValue = writeVisible ? tokenM(totals.cache_write_input_tokens) : '不可见';
+  const writeNote = writeVisible && Number(totals.cache_write_input_tokens || 0) === 0 ? '日志明确上报写入为0' : writeVisible ? '日志已提供写入字段' : '当前日志未提供写入字段';
+  return [
+    {key: 'exact', label: '今日精确 Token', value: tokenM(totals.total_tokens), note: '已结算 EXACT'},
+    {key: 'generating', label: '生成中临时 Token', value: generatingValue, note: generatingNote},
+    {key: 'io', label: '总输入 / 输出', value: `${tokenM(totals.input_tokens)}/${tokenM(totals.output_tokens)}`, note: `推理输出${tokenM(totals.reasoning_output_tokens)}`},
+    {key: 'cache', label: '缓存读取 / 写入', value: `${tokenM(totals.cached_input_tokens)}/${writeValue}`, note: `命中率${trimNumber(totals.cache_hit_rate || 0, 1)}% · ${writeNote}`},
+    {key: 'active', label: '活跃会话 / 在线设备', value: `${totals.active_sessions || 0}/${totals.online_hosts || 0}`, note: '5分钟内有事件 · 按设备和父会话去重'},
+    {key: 'openai', label: 'OpenAI API 等价', value: money(totals.api?.value), note: `${cny(totals.api_cny)} · 官方费率每日同步 · ${stamp(totals.api?.verified_at)}`},
+    {key: 'vercel', label: 'Vercel 等价', value: money(totals.vercel?.value), note: `${cny(totals.vercel_cny)} · 模型目录每日同步 · ${stamp(totals.vercel?.verified_at)}`},
+    {key: 'credits', label: 'Codex Credits 等价', value: credits(totals.credits?.value), note: totals.credits_purchase_usd ? `购买均价${money(totals.credits_purchase_usd)}/${cny(totals.credits_purchase_cny)}` : '未录入购买批次'},
+    {key: 'fx', label: '实时 USD/CNY', value: fx.rate ? `1USD=${cny(fx.rate)}` : '等待汇率', note: `ECB ${fx.rate_date || '-'} · ${fxState}`},
+    {key: 'cash', label: '实际新增现金支出', value: money(totals.actual_incremental_cash), note: '套餐内会话为0；监控程序不调用模型'}
+  ];
+}
+
+function renderCards(snapshot) {
+  const items = dashboardCards(snapshot);
+  const container = $('#cards');
+  const currentKeys = [...container.querySelectorAll('[data-card]')].map(element => element.dataset.card).join('|');
+  const nextKeys = items.map(item => item.key).join('|');
+  if (currentKeys !== nextKeys) {
+    container.innerHTML = items.map(card).join('');
+    return;
+  }
+  for (const item of items) {
+    const element = [...container.querySelectorAll('[data-card]')].find(node => node.dataset.card === item.key);
+    updateText(element?.querySelector('[data-card-value]'), item.value);
+    updateText(element?.querySelector('[data-card-note]'), item.note);
+  }
+}
+
+function render(snapshot, forceStructure = false) {
+  state = snapshot;
+  renderCards(snapshot);
+  if (forceStructure) renderedStructure = '';
+  renderGroups(forceStructure);
+  updateText($('#updated'), `最后更新 ${new Date(snapshot.generated_at).toLocaleString('zh-CN', {hour12: false})}`);
 }
 
 const sumFields = ['live_estimate', 'total_tokens', 'input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens', 'api_cost', 'vercel_cost', 'credits'];
@@ -131,6 +187,7 @@ function groupedSessions(rows) {
     group.reasoning_effort = representative.reasoning_effort || '-';
     group.status = (group.latest || representative).status || 'EXACT';
     group.data_quality = representative.data_quality || '-';
+    group.cache_write_visible = group.records.every(item => item.cache_write_visible !== false && item.data_quality !== 'CACHE_WRITE_UNKNOWN');
     group.cache_hit_rate = group.input_tokens > 0 ? group.cached_input_tokens / group.input_tokens * 100 : 0;
     group.records.sort((left, right) => new Date(right.last_event_at) - new Date(left.last_event_at));
   }
@@ -143,57 +200,82 @@ function deviceName(platform) {
   return ['◻️', '未知设备'];
 }
 
-function statusPill(status) {
-  const className = status === 'EXACT' ? 'exact' : status === 'ESTIMATED_LIVE' || status === 'LOWER_BOUND' ? 'estimated' : 'stale';
-  return `<span class="pill ${className}">${esc(status)}</span>`;
+function domKey(...parts) {
+  return parts.map(part => encodeURIComponent(String(part ?? ''))).join('|');
 }
 
-function metric(label, value, note = '') {
-  return `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div>${note ? `<div class="pricing-note">${note}</div>` : ''}</div>`;
+function statusPill(status) {
+  const className = status === 'EXACT' ? 'exact' : status === 'ESTIMATED_LIVE' || status === 'LOWER_BOUND' ? 'estimated' : 'stale';
+  return `<span class="pill ${className}" data-session-status>${esc(status)}</span>`;
+}
+
+function metric(key, label, value, note = '') {
+  return `<div class="metric" data-metric="${esc(key)}"><div class="metric-label">${esc(label)}</div><div class="metric-value" data-metric-value>${esc(value)}</div><div class="pricing-note" data-metric-note>${esc(note)}</div></div>`;
+}
+
+function recordRow(record) {
+  return `<tr data-record-key="${esc(domKey(record.host_id, record.conversation_id))}">
+    <td data-record-field="type">${record.parent_conversation_id ? '内部调用' : '主会话'}</td>
+    <td data-record-field="id">${esc(shortID(record.conversation_id))}</td>
+    <td data-record-field="model">${esc(record.model)}</td>
+    <td data-record-field="effort">${esc(record.reasoning_effort)}</td>
+    <td data-record-field="total">${token(record.total_tokens)}</td>
+    <td data-record-field="input">${token(record.input_tokens)}</td>
+    <td data-record-field="output">${token(record.output_tokens)}</td>
+    <td data-record-field="time">${ago(record.last_event_at)}</td>
+    <td><button type="button" class="detail-button secondary" data-detail="${esc(record.conversation_id)}">详情</button></td>
+  </tr>`;
 }
 
 function recordRows(records) {
-  return records.map(record => `<tr>
-    <td>${record.parent_conversation_id ? '内部调用' : '主会话'}</td>
-    <td>${esc(shortID(record.conversation_id))}</td>
-    <td>${esc(record.model)}</td>
-    <td>${esc(record.reasoning_effort)}</td>
-    <td>${token(record.total_tokens)}</td>
-    <td>${token(record.input_tokens)}</td>
-    <td>${token(record.output_tokens)}</td>
-    <td>${ago(record.last_event_at)}</td>
-    <td><button type="button" class="detail-button secondary" data-detail="${esc(record.conversation_id)}">详情</button></td>
-  </tr>`).join('');
+  return records.map(recordRow).join('');
+}
+
+function sessionMetricValues(group) {
+  const fx = Number(state.exchange_rate?.rate || 0);
+  const write = group.cache_write_visible ? tokenM(group.cache_write_input_tokens) : '不可见';
+  const writeNote = group.cache_write_visible && Number(group.cache_write_input_tokens || 0) === 0 ? '日志明确上报0' : group.cache_write_visible ? '' : '日志未提供该字段';
+  return {
+    total: {value: tokenM(group.total_tokens), note: `${group.records.length}条记录`},
+    input: {value: tokenM(group.input_tokens), note: ''},
+    cache_read: {value: tokenM(group.cached_input_tokens), note: `${trimNumber(group.cache_hit_rate, 1)}%`},
+    cache_write: {value: write, note: writeNote},
+    output: {value: tokenM(group.output_tokens), note: `推理${tokenM(group.reasoning_output_tokens)}`},
+    openai: {value: money(group.api_cost), note: cny(group.api_cost * fx)},
+    vercel: {value: money(group.vercel_cost), note: cny(group.vercel_cost * fx)},
+    credits: {value: credits(group.credits), note: ''}
+  };
 }
 
 function sessionCard(group) {
-  const fx = Number(state.exchange_rate?.rate || 0);
-  return `<article class="session-card">
+  const values = sessionMetricValues(group);
+  const key = domKey(group.host_id, group.root_id);
+  return `<article class="session-card" data-session-key="${esc(key)}">
     <div class="session-heading">
-      <span class="session-title">${esc(group.name)}</span>
+      <span class="session-title" data-session-name>${esc(group.name)}</span>
       <span class="session-id">${esc(shortID(group.root_id))}</span>
       ${statusPill(group.status)}
-      <span>${esc(group.model)} · ${esc(group.reasoning_effort)}</span>
-      <span class="session-time">${duration(group.started_at)} · ${ago(group.last_event_at)}</span>
+      <span data-session-model>${esc(group.model)} · ${esc(group.reasoning_effort)}</span>
+      <span class="session-time" data-session-time>${duration(group.started_at)} · ${ago(group.last_event_at)}</span>
     </div>
     <div class="session-metrics">
-      ${metric('总Token', token(group.total_tokens), `${group.records.length}条记录`)}
-      ${metric('输入', token(group.input_tokens))}
-      ${metric('缓存读取', token(group.cached_input_tokens), `${trimNumber(group.cache_hit_rate, 1)}%`)}
-      ${metric('缓存写入', token(group.cache_write_input_tokens))}
-      ${metric('输出', token(group.output_tokens), `推理${token(group.reasoning_output_tokens)}`)}
-      ${metric('OpenAI', money(group.api_cost), cny(group.api_cost * fx))}
-      ${metric('Vercel', money(group.vercel_cost), cny(group.vercel_cost * fx))}
-      ${metric('Credits', credits(group.credits))}
+      ${metric('total', '总Token', values.total.value, values.total.note)}
+      ${metric('input', '输入', values.input.value, values.input.note)}
+      ${metric('cache_read', '缓存读取', values.cache_read.value, values.cache_read.note)}
+      ${metric('cache_write', '缓存写入', values.cache_write.value, values.cache_write.note)}
+      ${metric('output', '输出', values.output.value, values.output.note)}
+      ${metric('openai', 'OpenAI', values.openai.value, values.openai.note)}
+      ${metric('vercel', 'Vercel', values.vercel.value, values.vercel.note)}
+      ${metric('credits', 'Credits', values.credits.value, values.credits.note)}
     </div>
-    <details class="child-records">
-      <summary>展开${group.records.length}条原始记录（内部工具调用已聚拢）</summary>
+    <details class="child-records" data-node-key="records:${esc(key)}">
+      <summary data-record-summary>展开${group.records.length}条原始记录（内部工具调用已聚拢）</summary>
       <div class="table-wrap"><table><thead><tr><th>类型</th><th>ID</th><th>模型</th><th>推理</th><th>总Token</th><th>输入</th><th>输出</th><th>最后事件</th><th>操作</th></tr></thead><tbody>${recordRows(group.records)}</tbody></table></div>
     </details>
   </article>`;
 }
 
-function renderGroups() {
+function groupedView() {
   const query = $('#filter').value.trim().toLowerCase();
   const groups = groupedSessions(state.sessions || []).filter(group => !query || JSON.stringify([
     group.host, group.platform, group.project, group.name, group.model, group.root_id,
@@ -205,9 +287,67 @@ function renderGroups() {
     if (!hosts.has(group.host_id)) hosts.set(group.host_id, {host_id: group.host_id, alias: group.host, platform: group.platform, online: false});
   }
 
-  const html = [...hosts.values()].map(host => {
+  const visibleHosts = [...hosts.values()].filter(host => {
     const hostGroups = groups.filter(group => group.host_id === host.host_id);
-    if (query && !hostGroups.length && !JSON.stringify(host).toLowerCase().includes(query)) return '';
+    return !query || hostGroups.length || JSON.stringify(host).toLowerCase().includes(query);
+  });
+  return {query, groups, hosts: visibleHosts};
+}
+
+function projectStats(hostID, project, projectGroups) {
+  const totals = {total_tokens: 0, api_cost: 0, vercel_cost: 0, credits: 0, records: 0};
+  for (const group of projectGroups) {
+    totals.total_tokens += Number(group.total_tokens || 0);
+    totals.api_cost += Number(group.api_cost || 0);
+    totals.vercel_cost += Number(group.vercel_cost || 0);
+    totals.credits += Number(group.credits || 0);
+    totals.records += group.records.length;
+  }
+  const exactTotals = (state.project_totals || []).find(item => item.host_id === hostID && item.project === project);
+  if (exactTotals) {
+    totals.total_tokens = Number(exactTotals.total_tokens || 0);
+    totals.api_cost = Number(exactTotals.api_cost || 0);
+    totals.vercel_cost = Number(exactTotals.vercel_cost || 0);
+    totals.credits = Number(exactTotals.credits || 0);
+    totals.records = Number(exactTotals.records || 0);
+  }
+  totals.sessions = exactTotals ? Number(exactTotals.sessions || 0) : projectGroups.length;
+  const fx = Number(state.exchange_rate?.rate || 0);
+  return {
+    token: `Token ${tokenM(totals.total_tokens)}`,
+    openai: `OpenAI ${money(totals.api_cost)}/${cny(totals.api_cost * fx)}`,
+    vercel: `Vercel ${money(totals.vercel_cost)}/${cny(totals.vercel_cost * fx)}`,
+    credits: credits(totals.credits),
+    count: `${totals.sessions}个会话 · ${totals.records}条记录`
+  };
+}
+
+function viewStructure(view) {
+  const hosts = view.hosts.map(host => host.host_id).sort();
+  const groups = view.groups.map(group => [group.host_id, group.root_id, group.project]);
+  groups.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  return JSON.stringify({
+    query: view.query,
+    hosts,
+    groups
+  });
+}
+
+function openDetailsState() {
+  const result = new Map();
+  document.querySelectorAll('#sessionGroups details[data-node-key]').forEach(element => result.set(element.dataset.nodeKey, element.open));
+  return result;
+}
+
+function restoreOpenDetails(saved) {
+  document.querySelectorAll('#sessionGroups details[data-node-key]').forEach(element => {
+    if (saved.has(element.dataset.nodeKey)) element.open = saved.get(element.dataset.nodeKey);
+  });
+}
+
+function groupsHTML(view) {
+  return view.hosts.map(host => {
+    const hostGroups = view.groups.filter(group => group.host_id === host.host_id);
     const [icon, kind] = deviceName(host.platform);
     const rawCount = hostGroups.reduce((total, group) => total + group.records.length, 0);
     const projects = new Map();
@@ -216,40 +356,127 @@ function renderGroups() {
       projects.get(group.project).push(group);
     }
     const projectHTML = [...projects.entries()].map(([project, projectGroups]) => {
-      const totals = {total_tokens: 0, api_cost: 0, vercel_cost: 0, credits: 0, records: 0};
-      for (const group of projectGroups) {
-        totals.total_tokens += Number(group.total_tokens || 0);
-        totals.api_cost += Number(group.api_cost || 0);
-        totals.vercel_cost += Number(group.vercel_cost || 0);
-        totals.credits += Number(group.credits || 0);
-        totals.records += group.records.length;
-      }
-      const exactTotals = (state.project_totals || []).find(item => item.host_id === host.host_id && item.project === project);
-      if (exactTotals) {
-        totals.total_tokens = Number(exactTotals.total_tokens || 0);
-        totals.api_cost = Number(exactTotals.api_cost || 0);
-        totals.vercel_cost = Number(exactTotals.vercel_cost || 0);
-        totals.credits = Number(exactTotals.credits || 0);
-        totals.records = Number(exactTotals.records || 0);
-      }
-      const sessionCount = exactTotals ? Number(exactTotals.sessions || 0) : projectGroups.length;
-      const fx = Number(state.exchange_rate?.rate || 0);
-      return `<details class="project-group" open>
-        <summary>
+      const stats = projectStats(host.host_id, project, projectGroups);
+      const projectKey = domKey(host.host_id, project);
+      return `<details class="project-group" open data-node-key="project:${esc(projectKey)}" data-project-key="${esc(projectKey)}">
+        <summary title="这里是归属于该项目的 Codex 会话用量；监控服务本身不调用模型">
           <span class="project-title">📁 ${esc(project)}</span>
-          <span class="project-totals"><span>Token ${token(totals.total_tokens)}</span><span>OpenAI ${money(totals.api_cost)}/${cny(totals.api_cost * fx)}</span><span>Vercel ${money(totals.vercel_cost)}/${cny(totals.vercel_cost * fx)}</span><span>${credits(totals.credits)}</span></span>
-          <span class="project-count">${sessionCount}个会话 · ${totals.records}条记录</span>
+          <span class="project-totals"><span data-project-field="token">${esc(stats.token)}</span><span data-project-field="openai">${esc(stats.openai)}</span><span data-project-field="vercel">${esc(stats.vercel)}</span><span data-project-field="credits">${esc(stats.credits)}</span></span>
+          <span class="project-count" data-project-field="count">${esc(stats.count)}</span>
         </summary>
         <div class="project-sessions">${projectGroups.map(sessionCard).join('')}</div>
       </details>`;
     }).join('');
     const empty = projectHTML || '<div class="empty-device">此时间范围暂无会话，但设备仍在正常上报心跳。</div>';
-    return `<details class="device-group" open>
-      <summary><span class="device-icon">${icon}</span><span class="device-name">${esc(host.alias)}</span><span class="device-kind">${kind}</span><span class="pill ${host.online ? 'online' : 'offline'}">${host.online ? '在线' : '离线'}</span><span class="device-count">${hostGroups.length}个聚合会话 · ${rawCount}条原始记录</span></summary>
+    const hostKey = domKey(host.host_id);
+    return `<details class="device-group" open data-node-key="device:${esc(hostKey)}" data-device-key="${esc(hostKey)}">
+      <summary><span class="device-icon">${icon}</span><span class="device-name">${esc(host.alias)}</span><span class="device-kind">${kind}</span><span class="pill ${host.online ? 'online' : 'offline'}" data-device-online>${host.online ? '在线' : '离线'}</span><span class="device-count" data-device-count>${hostGroups.length}个聚合会话 · ${rawCount}条原始记录</span></summary>
       <div class="project-list">${empty}</div>
     </details>`;
-  }).join('');
-  $('#sessionGroups').innerHTML = html || '<div class="empty-device">没有符合条件的会话。</div>';
+  }).join('') || '<div class="empty-device">没有符合条件的会话。</div>';
+}
+
+function updateStatus(element, status) {
+  if (!element) return;
+  const className = status === 'EXACT' ? 'exact' : status === 'ESTIMATED_LIVE' || status === 'LOWER_BOUND' ? 'estimated' : 'stale';
+  element.className = `pill ${className}`;
+  updateText(element, status);
+}
+
+function updateRecordRow(row, record) {
+  const values = {
+    type: record.parent_conversation_id ? '内部调用' : '主会话',
+    id: shortID(record.conversation_id),
+    model: record.model || '',
+    effort: record.reasoning_effort || '',
+    total: token(record.total_tokens),
+    input: token(record.input_tokens),
+    output: token(record.output_tokens),
+    time: ago(record.last_event_at)
+  };
+  for (const [field, value] of Object.entries(values)) updateText(row.querySelector(`[data-record-field="${field}"]`), value);
+}
+
+function patchRecordRows(article, group) {
+  const body = article.querySelector('tbody');
+  if (!body) return;
+  const existing = new Map([...body.querySelectorAll('[data-record-key]')].map(row => [row.dataset.recordKey, row]));
+  const desired = new Set(group.records.map(record => domKey(record.host_id, record.conversation_id)));
+  for (const [key, row] of existing) {
+    if (!desired.has(key) && !selectionTouches(row)) {
+      row.remove();
+      existing.delete(key);
+    }
+  }
+  for (const record of [...group.records].reverse()) {
+    const key = domKey(record.host_id, record.conversation_id);
+    if (!existing.has(key)) {
+      body.insertAdjacentHTML('afterbegin', recordRow(record));
+      existing.set(key, body.firstElementChild);
+    }
+  }
+  for (const record of group.records) updateRecordRow(existing.get(domKey(record.host_id, record.conversation_id)), record);
+}
+
+function patchGroups(view) {
+  for (const host of view.hosts) {
+    const hostGroups = view.groups.filter(group => group.host_id === host.host_id);
+    const element = [...document.querySelectorAll('[data-device-key]')].find(node => node.dataset.deviceKey === domKey(host.host_id));
+    if (!element) continue;
+    const online = element.querySelector('[data-device-online]');
+    if (online) online.className = `pill ${host.online ? 'online' : 'offline'}`;
+    updateText(online, host.online ? '在线' : '离线');
+    updateText(element.querySelector('[data-device-count]'), `${hostGroups.length}个聚合会话 · ${hostGroups.reduce((total, group) => total + group.records.length, 0)}条原始记录`);
+  }
+  const projects = new Map();
+  for (const group of view.groups) {
+    const key = domKey(group.host_id, group.project);
+    if (!projects.has(key)) projects.set(key, []);
+    projects.get(key).push(group);
+  }
+  for (const [key, projectGroups] of projects) {
+    const element = [...document.querySelectorAll('[data-project-key]')].find(node => node.dataset.projectKey === key);
+    if (!element) continue;
+    const stats = projectStats(projectGroups[0].host_id, projectGroups[0].project, projectGroups);
+    for (const [field, value] of Object.entries(stats)) updateText(element.querySelector(`[data-project-field="${field}"]`), value);
+  }
+  for (const group of view.groups) {
+    const article = [...document.querySelectorAll('[data-session-key]')].find(node => node.dataset.sessionKey === domKey(group.host_id, group.root_id));
+    if (!article) continue;
+    updateText(article.querySelector('[data-session-name]'), group.name);
+    updateStatus(article.querySelector('[data-session-status]'), group.status);
+    updateText(article.querySelector('[data-session-model]'), `${group.model} · ${group.reasoning_effort}`);
+    updateText(article.querySelector('[data-session-time]'), `${duration(group.started_at)} · ${ago(group.last_event_at)}`);
+    const values = sessionMetricValues(group);
+    for (const [key, item] of Object.entries(values)) {
+      const metricElement = [...article.querySelectorAll('[data-metric]')].find(node => node.dataset.metric === key);
+      updateText(metricElement?.querySelector('[data-metric-value]'), item.value);
+      updateText(metricElement?.querySelector('[data-metric-note]'), item.note);
+    }
+    updateText(article.querySelector('[data-record-summary]'), `展开${group.records.length}条原始记录（内部工具调用已聚拢）`);
+    patchRecordRows(article, group);
+  }
+}
+
+function renderGroups(force = false) {
+  const view = groupedView();
+  const nextStructure = viewStructure(view);
+  const container = $('#sessionGroups');
+  const changed = force || nextStructure !== renderedStructure;
+  if (changed && container.children.length && selectionTouches(container)) {
+    structurePending = true;
+    patchGroups(view);
+    return;
+  }
+  if (changed) {
+    const open = openDetailsState();
+    container.innerHTML = groupsHTML(view);
+    restoreOpenDetails(open);
+    renderedStructure = nextStructure;
+    structurePending = false;
+    return;
+  }
+  patchGroups(view);
 }
 
 function csrf() {
@@ -261,7 +488,7 @@ async function renameSession(id) {
   const response = await fetch(`/api/sessions/${encodeURIComponent(id)}`, {method: 'PATCH', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf()}, body: JSON.stringify({name})});
   if (response.ok) {
     $('#dialog').close();
-    loadPeriod();
+    loadPeriod(true);
   }
 }
 
@@ -300,7 +527,7 @@ function purchaseDialog() {
   $('#dialog').showModal();
 }
 
-async function loadPeriod() {
+async function loadPeriod(forceStructure = false) {
   let query = `period=${encodeURIComponent($('#period').value)}`;
   const from = $('#from').value;
   const to = $('#to').value;
@@ -309,7 +536,7 @@ async function loadPeriod() {
     if (to) query += `&to=${encodeURIComponent(new Date(to).toISOString())}`;
   }
   const response = await fetch(`/api/snapshot?${query}`);
-  if (response.ok) render(await response.json());
+  if (response.ok) render(await response.json(), forceStructure);
 }
 
 let poll;
@@ -336,22 +563,31 @@ function connect() {
 }
 
 function startDashboard() {
-  $('#applyRange').onclick = loadPeriod;
-  $('#period').onchange = loadPeriod;
-  $('#filter').oninput = renderGroups;
+  $('#applyRange').onclick = () => loadPeriod(true);
+  $('#period').onchange = () => loadPeriod(true);
+  $('#filter').oninput = () => renderGroups(true);
   $('#addWindows').onclick = () => enroll('windows');
   $('#addLinux').onclick = () => enroll('linux');
   $('#addPurchase').onclick = purchaseDialog;
   $('#close').onclick = () => $('#dialog').close();
   $('#sessionGroups').addEventListener('click', event => {
+    const selection = document.getSelection?.();
+    if (event.target.closest('summary') && selection && !selection.isCollapsed) {
+      event.preventDefault();
+      return;
+    }
     const button = event.target.closest('[data-detail]');
     if (button) {
       event.stopPropagation();
       detail(button.dataset.detail);
     }
   });
+  document.addEventListener('selectionchange', () => {
+    const selection = document.getSelection?.();
+    if (structurePending && (!selection || selection.isCollapsed)) renderGroups(true);
+  });
   connect();
 }
 
 if (typeof document !== 'undefined') startDashboard();
-if (typeof module !== 'undefined' && module.exports) module.exports = {token, groupedSessions, displayProjectName};
+if (typeof module !== 'undefined' && module.exports) module.exports = {token, tokenM, groupedSessions, displayProjectName, dashboardCards, sessionMetricValues, viewStructure, updateText};

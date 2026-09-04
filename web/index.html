@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex Token Meter</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/dashboard.css?v=4"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex Token Meter</title><link rel="stylesheet" href="/style.css?v=5"><link rel="stylesheet" href="/dashboard.css?v=5"></head>
 <body>
 <header><div><span class="brand">Codex Token Meter</span><span class="sub">实时、可核验的本地 Codex 用量</span></div><div class="header-actions"><span id="sse" class="pill offline">SSE 连接中</span><a href="/logout">退出</a></div></header>
 <main>
@@ -13,7 +13,7 @@
     <button id="addPurchase" class="secondary">录入 Credits 购买批次</button>
     <a href="/api/export?format=csv">CSV</a><a href="/api/export?format=json">JSON</a>
   </section>
-  <section class="panel"><div class="panel-title"><h2>按设备与项目聚拢的会话</h2><span id="updated">等待数据</span></div><div id="sessionGroups" class="session-groups"></div></section>
+  <section class="panel"><div class="panel-title"><div><h2>按设备与项目聚拢的会话</h2><div class="panel-explain">这里显示的是归属于各项目的 Codex 任务用量；监控服务只读取本地数字，不调用模型 API，也不会产生 Token。</div></div><span id="updated">等待数据</span></div><div id="sessionGroups" class="session-groups"></div></section>
 </main>
 <dialog id="dialog"><button class="close" id="close">×</button><h2 id="dialogTitle">详情</h2><div id="dialogBody"></div></dialog>
-<script src="/app.js?v=4"></script></body></html>
+<script src="/app.js?v=5"></script></body></html>
