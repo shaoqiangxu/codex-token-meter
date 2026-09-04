@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const {token, tokenM, groupedSessions, dashboardCards, sessionMetricValues, viewStructure, updateText} = require('../web/app.js');
 
 assert.equal(token(1234500), '1.2345M');
@@ -44,3 +45,5 @@ global.document = {getSelection: () => ({isCollapsed: true, rangeCount: 0})};
 updateText(selected, '刷新值');
 assert.equal(selected.textContent, '刷新值');
 delete global.document;
+
+assert.match(fs.readFileSync(require.resolve('../web/style.css'), 'utf8'), /body>#_copy\._copied-button\{display:none!important\}/);
