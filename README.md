@@ -33,6 +33,12 @@ systemctl start codex-meter-agent
 
 Do not run `backfill` unless importing pre-baseline history is intended.
 
+Windows agents run through a hidden `wscript.exe` launcher. To repair an installation made before hidden launching was added, run this once in an Administrator PowerShell window:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://token.xsqhub.com/install/windows-hide.ps1' | iex"
+```
+
 ## Accuracy model
 
 - Exact events use positive deltas of `total_token_usage`. Presentation state is keyed by host and conversation; the accounting watermark is keyed by host, source log, and file epoch so copied `ctco_*`/`fco_*` prefixes are counted once.

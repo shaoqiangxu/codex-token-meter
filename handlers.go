@@ -516,13 +516,35 @@ $d=Join-Path $env:LOCALAPPDATA 'CodexTokenMeter'; New-Item -ItemType Directory -
 $exe=Join-Path $d 'codex-meter.exe'; Invoke-WebRequest '%s/downloads/%s' -OutFile $exe
 if((Get-FileHash $exe -Algorithm SHA256).Hash.ToLower() -ne '%s'){throw 'SHA-256 mismatch'}
 & $exe enroll --server '%s' --token '%s' --platform windows --config (Join-Path $d 'agent.json')
-$acl=Join-Path $d 'agent.json'; icacls $acl /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
-$action=New-ScheduledTaskAction -Execute $exe -Argument ('agent --config "'+(Join-Path $d 'agent.json')+'"')
+$cfg=Join-Path $d 'agent.json'; icacls $cfg /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null
+$launcher=Join-Path $d 'agent.vbs'
+$vbs='CreateObject("Wscript.Shell").Run """'+$exe+'"" agent --config ""'+$cfg+'""", 0, False'
+Set-Content -LiteralPath $launcher -Value $vbs -Encoding ASCII
+$action=New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot 'System32\wscript.exe') -Argument ('"'+$launcher+'"')
 $trigger=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 Register-ScheduledTask -TaskName 'CodexTokenMeter' -Action $action -Trigger $trigger -Force | Out-Null
 Start-ScheduledTask -TaskName 'CodexTokenMeter'; Write-Host 'Codex Token Meter installed.'
 `, base, name, sum, base, token)
 }
+
+func (s *server) windowsHideRepair(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	io.WriteString(w, `$ErrorActionPreference='Stop'
+$d=Join-Path $env:LOCALAPPDATA 'CodexTokenMeter'
+$exe=Join-Path $d 'codex-meter.exe'; $cfg=Join-Path $d 'agent.json'
+if(!(Test-Path -LiteralPath $exe) -or !(Test-Path -LiteralPath $cfg)){throw 'Codex Token Meter is not installed for this user'}
+$launcher=Join-Path $d 'agent.vbs'
+$vbs='CreateObject("Wscript.Shell").Run """'+$exe+'"" agent --config ""'+$cfg+'""", 0, False'
+Set-Content -LiteralPath $launcher -Value $vbs -Encoding ASCII
+Stop-ScheduledTask -TaskName 'CodexTokenMeter' -ErrorAction SilentlyContinue
+$action=New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot 'System32\wscript.exe') -Argument ('"'+$launcher+'"')
+Set-ScheduledTask -TaskName 'CodexTokenMeter' -Action $action | Out-Null
+Get-Process -Name 'codex-meter' -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-ScheduledTask -TaskName 'CodexTokenMeter'
+Write-Host 'Codex Token Meter now runs hidden in the background.'
+`)
+}
+
 func (s *server) linuxInstaller(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")
 	if !s.validEnrollment(token, "linux") {
