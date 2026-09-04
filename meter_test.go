@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,47 @@ import (
 
 func counts(i, c, w, o, r int64) TokenCounts {
 	return TokenCounts{InputTokens: i, CachedInputTokens: c, CacheWriteInputTokens: w, OutputTokens: o, ReasoningOutputTokens: r, TotalTokens: i + o, CacheWriteVisible: true}
+}
+
+func TestLoginCSRFIsServerRendered(t *testing.T) {
+	const password = "correct-horse-battery-staple"
+	hash, err := hashPassword(password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &server{cfg: ServerConfig{AdminUser: "admin", AdminPasswordHash: hash, SessionSecret: "test-secret"}, login: map[string][]time.Time{}}
+
+	get := httptest.NewRequest(http.MethodGet, "https://token.example/login", nil)
+	got := httptest.NewRecorder()
+	s.loginHandler(got, get)
+	result := got.Result()
+	var csrf *http.Cookie
+	for _, cookie := range result.Cookies() {
+		if cookie.Name == "meter_csrf" {
+			csrf = cookie
+		}
+	}
+	if csrf == nil || !strings.Contains(got.Body.String(), `name="csrf" value="`+csrf.Value+`"`) {
+		t.Fatal("CSRF token was not rendered into the login form")
+	}
+
+	form := url.Values{"csrf": {csrf.Value}, "username": {"admin"}, "password": {password}}
+	post := httptest.NewRequest(http.MethodPost, "https://token.example/login", strings.NewReader(form.Encode()))
+	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	post.AddCookie(csrf)
+	loggedIn := httptest.NewRecorder()
+	s.loginHandler(loggedIn, post)
+	if loggedIn.Code != http.StatusSeeOther || loggedIn.Header().Get("Location") != "/" {
+		t.Fatalf("login failed: status=%d location=%q", loggedIn.Code, loggedIn.Header().Get("Location"))
+	}
+
+	stale := httptest.NewRequest(http.MethodPost, "https://token.example/login", strings.NewReader(form.Encode()))
+	stale.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	refreshed := httptest.NewRecorder()
+	s.loginHandler(refreshed, stale)
+	if refreshed.Code != http.StatusSeeOther || refreshed.Header().Get("Location") != "/login?error=csrf" {
+		t.Fatalf("stale login did not recover: status=%d location=%q", refreshed.Code, refreshed.Header().Get("Location"))
+	}
 }
 
 func TestCounterDeltaDuplicateAndReset(t *testing.T) {

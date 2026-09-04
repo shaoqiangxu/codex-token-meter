@@ -30,8 +30,18 @@ func (s *server) loginHandler(w http.ResponseWriter, r *http.Request) {
 		token, _ := randomToken(24)
 		http.SetCookie(w, &http.Cookie{Name: "meter_csrf", Value: token, Path: "/", Secure: true, HttpOnly: false, SameSite: http.SameSiteStrictMode, MaxAge: 3600})
 		b, _ := webFS.ReadFile("web/login.html")
+		body := strings.Replace(string(b), "{{CSRF}}", token, 1)
+		message := ""
+		switch r.URL.Query().Get("error") {
+		case "csrf":
+			message = `<p>登录页已刷新，请重新输入并登录。</p>`
+		case "credentials":
+			message = `<p>用户名或密码错误。</p>`
+		}
+		body = strings.Replace(body, "{{ERROR}}", message, 1)
+		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(b)
+		io.WriteString(w, body)
 		return
 	}
 	if r.Method != "POST" {
@@ -45,12 +55,12 @@ func (s *server) loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	c, err := r.Cookie("meter_csrf")
 	if err != nil || !hmac.Equal([]byte(c.Value), []byte(r.FormValue("csrf"))) {
-		http.Error(w, "CSRF", 403)
+		http.Redirect(w, r, "/login?error=csrf", http.StatusSeeOther)
 		return
 	}
 	if r.FormValue("username") != s.cfg.AdminUser || !verifyPassword(s.cfg.AdminPasswordHash, r.FormValue("password")) {
 		s.recordLoginFailure(ip)
-		http.Error(w, "用户名或密码错误", 401)
+		http.Redirect(w, r, "/login?error=credentials", http.StatusSeeOther)
 		return
 	}
 	expiry := time.Now().Add(12 * time.Hour).Unix()
