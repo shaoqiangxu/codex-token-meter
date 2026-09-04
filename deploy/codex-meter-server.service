@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=codex-meter
 Group=codex-meter
+UMask=0077
 ExecStart=/usr/local/bin/codex-meter server --config /etc/codex-token-meter/server.json
 Restart=always
 RestartSec=3

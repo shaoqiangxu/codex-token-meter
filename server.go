@@ -22,11 +22,13 @@ import (
 var webFS embed.FS
 
 type server struct {
-	cfg     ServerConfig
-	db      *sql.DB
-	hub     *eventHub
-	loginMu sync.Mutex
-	login   map[string][]time.Time
+	cfg         ServerConfig
+	db          *sql.DB
+	hub         *eventHub
+	loginMu     sync.Mutex
+	login       map[string][]time.Time
+	ingestMu    sync.Mutex
+	ingestTimes map[string][]time.Time
 }
 
 func runServer(ctx context.Context, configPath string) error {
@@ -49,7 +51,7 @@ func runServer(ctx context.Context, configPath string) error {
 	if err = migrateServer(db); err != nil {
 		return err
 	}
-	s := &server{cfg: cfg, db: db, hub: newHub(), login: map[string][]time.Time{}}
+	s := &server{cfg: cfg, db: db, hub: newHub(), login: map[string][]time.Time{}, ingestTimes: map[string][]time.Time{}}
 	go s.hub.run(s.snapshot)
 	go s.vercelPriceLoop(ctx)
 	mux := http.NewServeMux()
@@ -124,6 +126,10 @@ func (s *server) ingest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", 401)
 		return
 	}
+	if !s.ingestAllowed(b.HostID) {
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+		return
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		http.Error(w, "db", 500)
@@ -131,7 +137,7 @@ func (s *server) ingest(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 	for _, e := range b.Events {
-		if e.HostID != b.HostID {
+		if e.HostID != b.HostID || !validUsageEvent(e) {
 			http.Error(w, "host mismatch", 403)
 			return
 		}
@@ -149,12 +155,52 @@ func (s *server) ingest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"accepted": len(b.Events)})
 }
 
+func validUsageEvent(e UsageEvent) bool {
+	if e.EventID == "" || len(e.EventID) > 128 || e.ConversationID == "" || len(e.ConversationID) > 256 || len(e.SourceFileID) > 256 {
+		return false
+	}
+	switch e.EventType {
+	case "baseline", "exact_usage", "live_estimate", "activity":
+	default:
+		return false
+	}
+	vals := []int64{e.Counts.InputTokens, e.Counts.CachedInputTokens, e.Counts.CacheWriteInputTokens, e.Counts.OutputTokens, e.Counts.ReasoningOutputTokens, e.Counts.TotalTokens, e.LiveEstimate, e.ModelContextWindow}
+	for _, n := range vals {
+		if n < 0 || n > 1_000_000_000_000 {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *server) ingestAllowed(host string) bool {
+	s.ingestMu.Lock()
+	defer s.ingestMu.Unlock()
+	cut := time.Now().Add(-time.Second)
+	keep := s.ingestTimes[host][:0]
+	for _, t := range s.ingestTimes[host] {
+		if t.After(cut) {
+			keep = append(keep, t)
+		}
+	}
+	if len(keep) >= 20 {
+		s.ingestTimes[host] = keep
+		return false
+	}
+	s.ingestTimes[host] = append(keep, time.Now())
+	return true
+}
+
 func (s *server) applyEvent(tx *sql.Tx, e UsageEvent) error {
 	if e.ParentConversationID == "" && (strings.HasPrefix(e.ConversationID, "ctco_") || strings.HasPrefix(e.ConversationID, "fco_")) && e.SourceFileID != "" && e.SourceFileID != e.ConversationID {
 		e.ParentConversationID = e.SourceFileID
 	}
-	var exists int
-	if tx.QueryRow("SELECT COUNT(*) FROM usage_events WHERE event_id=?", e.EventID).Scan(&exists) == nil && exists > 0 {
+	seen, err := tx.Exec("INSERT OR IGNORE INTO ingested_events(event_id,host_id,event_type,created_at)VALUES(?,?,?,?)", e.EventID, e.HostID, e.EventType, time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return err
+	}
+	inserted, _ := seen.RowsAffected()
+	if inserted == 0 {
 		return nil
 	}
 	if e.EventType == "baseline" {
@@ -174,7 +220,7 @@ func (s *server) applyEvent(tx *sql.Tx, e UsageEvent) error {
 	}
 	old := TokenCounts{}
 	epoch := 0
-	err := tx.QueryRow("SELECT epoch,input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,total_tokens FROM conversation_counters WHERE host_id=? AND conversation_id=?", e.HostID, e.ConversationID).Scan(&epoch, &old.InputTokens, &old.CachedInputTokens, &old.CacheWriteInputTokens, &old.OutputTokens, &old.ReasoningOutputTokens, &old.TotalTokens)
+	err = tx.QueryRow("SELECT epoch,input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,total_tokens FROM conversation_counters WHERE host_id=? AND conversation_id=?", e.HostID, e.ConversationID).Scan(&epoch, &old.InputTokens, &old.CachedInputTokens, &old.CacheWriteInputTokens, &old.OutputTokens, &old.ReasoningOutputTokens, &old.TotalTokens)
 	if errors.Is(err, sql.ErrNoRows) && e.ParentConversationID != "" {
 		_ = tx.QueryRow("SELECT input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,total_tokens FROM conversation_counters WHERE host_id=? AND conversation_id=?", e.HostID, e.ParentConversationID).Scan(&old.InputTokens, &old.CachedInputTokens, &old.CacheWriteInputTokens, &old.OutputTokens, &old.ReasoningOutputTokens, &old.TotalTokens)
 	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -190,7 +236,7 @@ func (s *server) applyEvent(tx *sql.Tx, e UsageEvent) error {
 		dedup = e.TurnID
 	}
 	if dedup != "" {
-		dedup = stableID("response", dedup)
+		dedup = stableID("response", dedup, strconv.FormatInt(e.Counts.TotalTokens, 10))
 	} else {
 		dedup = stableID("counter", e.ConversationID, strconv.FormatInt(e.Counts.TotalTokens, 10), strconv.Itoa(epoch))
 	}

@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 project=/opt/codex-token-meter
+[ ! -e /etc/codex-token-meter/server.json ] || { echo "already installed; use the documented update procedure"; exit 1; }
 id codex-meter >/dev/null 2>&1 || useradd --system --home /var/lib/codex-token-meter --shell /usr/sbin/nologin codex-meter
 install -d -m 0750 -o root -g codex-meter /etc/codex-token-meter
 install -d -m 0750 -o codex-meter -g codex-meter /var/lib/codex-token-meter /var/backups/codex-token-meter
@@ -30,7 +31,7 @@ enrollment=$(openssl rand -hex 24)
 ehash=$(printf '%s' "$enrollment" | sha256sum | awk '{print $1}')
 now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 expires=$(date -u -d '+15 minutes' +%Y-%m-%dT%H:%M:%SZ)
-sqlite3 /var/lib/codex-token-meter/meter.db "INSERT INTO enrollments(token_hash,platform,expires_at,created_at) VALUES('$ehash','linux','$expires','$now');"
+runuser -u codex-meter -- sqlite3 /var/lib/codex-token-meter/meter.db "INSERT INTO enrollments(token_hash,platform,expires_at,created_at) VALUES('$ehash','linux','$expires','$now');"
 /usr/local/bin/codex-meter enroll --server http://127.0.0.1:8787 --token "$enrollment" --platform linux --alias "$(hostname -s)" --config /etc/codex-token-meter/agent.json >/dev/null
 chmod 0600 /etc/codex-token-meter/agent.json
 systemctl enable --now codex-meter-agent.service codex-meter-backup.timer

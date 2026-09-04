@@ -57,11 +57,21 @@ func runAgent(ctx context.Context, configPath string, once, backfill bool) error
 			return err
 		}
 	}
+	lastHeartbeat := time.Time{}
 	scan := func() error {
 		if err := scanCodexFiles(db, &cfg, backfill); err != nil {
 			return err
 		}
-		return flushSpool(ctx, db, &cfg)
+		if err := flushSpool(ctx, db, &cfg); err != nil {
+			return err
+		}
+		if time.Since(lastHeartbeat) >= 5*time.Second {
+			if err := sendHeartbeat(ctx, &cfg); err != nil {
+				return err
+			}
+			lastHeartbeat = time.Now()
+		}
+		return nil
 	}
 	if err := scan(); err != nil && once {
 		return err
@@ -81,6 +91,26 @@ func runAgent(ctx context.Context, configPath string, once, backfill bool) error
 			}
 		}
 	}
+}
+
+func sendHeartbeat(ctx context.Context, cfg *AgentConfig) error {
+	body, _ := json.Marshal(IngestBatch{HostID: cfg.HostID})
+	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(cfg.ServerURL, "/")+"/api/ingest", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+	resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("heartbeat HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func scanCodexFiles(db *sql.DB, cfg *AgentConfig, backfill bool) error {

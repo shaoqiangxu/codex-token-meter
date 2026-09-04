@@ -216,7 +216,7 @@ func (s *server) snapshotBetween(since, until time.Time) any {
 			continue
 		}
 		last := parseTime(v.LastEvent)
-		if time.Since(last) > 30*time.Second && v.Status == "ESTIMATED_LIVE" {
+		if time.Since(last) > 30*time.Second && (v.Status == "ESTIMATED_LIVE" || v.Status == "LOWER_BOUND") {
 			v.Status = "STALE"
 		}
 		if time.Since(last) < 5*time.Minute {

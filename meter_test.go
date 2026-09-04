@@ -238,6 +238,16 @@ func TestServerDedupParentPrefixLiveReconcile(t *testing.T) {
 	if total != 15 {
 		t.Fatal("response dedup failed")
 	}
+	growth := child
+	growth.EventID = "growing"
+	growth.Counts = counts(112, 22, 6, 38, 10)
+	tx, _ = s.db.Begin()
+	s.applyEvent(tx, growth)
+	tx.Commit()
+	s.db.QueryRow("SELECT total_tokens FROM sessions WHERE conversation_id='child'").Scan(&total)
+	if total != 20 {
+		t.Fatalf("same-turn growing counter lost: %d", total)
+	}
 	live := child
 	live.EventID = "live"
 	live.EventType = "live_estimate"
@@ -245,17 +255,25 @@ func TestServerDedupParentPrefixLiveReconcile(t *testing.T) {
 	tx, _ = s.db.Begin()
 	s.applyEvent(tx, live)
 	tx.Commit()
+	tx, _ = s.db.Begin()
+	s.applyEvent(tx, live)
+	tx.Commit()
+	var liveDedup int64
+	s.db.QueryRow("SELECT live_estimate FROM sessions WHERE conversation_id='child'").Scan(&liveDedup)
+	if liveDedup != 4 {
+		t.Fatalf("live replay duplicated: %d", liveDedup)
+	}
 	exact := child
 	exact.EventID = "e2"
 	exact.TurnID = "turn2"
-	exact.Counts = counts(112, 22, 6, 38, 10)
+	exact.Counts = counts(114, 23, 6, 40, 11)
 	tx, _ = s.db.Begin()
 	s.applyEvent(tx, exact)
 	tx.Commit()
 	var liveNow int64
 	var status string
 	s.db.QueryRow("SELECT live_estimate,status,total_tokens FROM sessions WHERE conversation_id='child'").Scan(&liveNow, &status, &total)
-	if liveNow != 0 || status != "EXACT" || total != 20 {
+	if liveNow != 0 || status != "EXACT" || total != 24 {
 		t.Fatalf("reconcile failed %d %s %d", liveNow, status, total)
 	}
 }

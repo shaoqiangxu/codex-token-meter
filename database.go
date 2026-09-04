@@ -71,6 +71,9 @@ CREATE TABLE IF NOT EXISTS usage_events (
  cache_write_visible INTEGER NOT NULL, data_quality TEXT NOT NULL, parser_version TEXT NOT NULL,
  epoch INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ingested_events (
+ event_id TEXT PRIMARY KEY, host_id TEXT NOT NULL, event_type TEXT NOT NULL, created_at TEXT NOT NULL
+);
 CREATE UNIQUE INDEX IF NOT EXISTS usage_dedup ON usage_events(host_id, dedup_key) WHERE dedup_key IS NOT NULL AND dedup_key <> '';
 CREATE INDEX IF NOT EXISTS usage_time ON usage_events(timestamp);
 CREATE INDEX IF NOT EXISTS usage_session ON usage_events(host_id, conversation_id, timestamp);

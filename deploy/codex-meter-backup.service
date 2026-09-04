@@ -5,6 +5,7 @@ Description=Codex Token Meter SQLite online backup
 Type=oneshot
 User=codex-meter
 Group=codex-meter
+UMask=0077
 ExecStart=/usr/local/bin/codex-meter backup --db /var/lib/codex-token-meter/meter.db --keep 14
 NoNewPrivileges=true
 PrivateTmp=true
