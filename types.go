@@ -19,6 +19,7 @@ type UsageEvent struct {
 	HostID               string      `json:"host_id"`
 	SourceFileID         string      `json:"source_file_id"`
 	ByteOffset           int64       `json:"byte_offset"`
+	SourceEpoch          int         `json:"source_epoch"`
 	EventType            string      `json:"event_type"`
 	Timestamp            time.Time   `json:"timestamp"`
 	ConversationID       string      `json:"conversation_id"`

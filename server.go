@@ -205,6 +205,10 @@ func (s *server) applyEvent(tx *sql.Tx, e UsageEvent) error {
 	}
 	if e.EventType == "baseline" {
 		_, err := tx.Exec(`INSERT INTO conversation_counters(host_id,conversation_id,input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,total_tokens,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(host_id,conversation_id) DO UPDATE SET input_tokens=excluded.input_tokens,cached_input_tokens=excluded.cached_input_tokens,cache_write_input_tokens=excluded.cache_write_input_tokens,output_tokens=excluded.output_tokens,reasoning_output_tokens=excluded.reasoning_output_tokens,total_tokens=excluded.total_tokens,updated_at=excluded.updated_at`, e.HostID, e.ConversationID, e.Counts.InputTokens, e.Counts.CachedInputTokens, e.Counts.CacheWriteInputTokens, e.Counts.OutputTokens, e.Counts.ReasoningOutputTokens, e.Counts.TotalTokens, e.Timestamp.Format(time.RFC3339Nano))
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(`INSERT INTO source_counters(host_id,source_file_id,epoch,input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,total_tokens,updated_at)VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(host_id,source_file_id) DO UPDATE SET epoch=CASE WHEN excluded.epoch>epoch THEN excluded.epoch ELSE epoch END,input_tokens=CASE WHEN excluded.total_tokens>total_tokens OR excluded.epoch>epoch THEN excluded.input_tokens ELSE input_tokens END,cached_input_tokens=CASE WHEN excluded.total_tokens>total_tokens OR excluded.epoch>epoch THEN excluded.cached_input_tokens ELSE cached_input_tokens END,cache_write_input_tokens=CASE WHEN excluded.total_tokens>total_tokens OR excluded.epoch>epoch THEN excluded.cache_write_input_tokens ELSE cache_write_input_tokens END,output_tokens=CASE WHEN excluded.total_tokens>total_tokens OR excluded.epoch>epoch THEN excluded.output_tokens ELSE output_tokens END,reasoning_output_tokens=CASE WHEN excluded.total_tokens>total_tokens OR excluded.epoch>epoch THEN excluded.reasoning_output_tokens ELSE reasoning_output_tokens END,total_tokens=CASE WHEN excluded.total_tokens>total_tokens OR excluded.epoch>epoch THEN excluded.total_tokens ELSE total_tokens END,updated_at=excluded.updated_at`, e.HostID, e.SourceFileID, e.SourceEpoch, e.Counts.InputTokens, e.Counts.CachedInputTokens, e.Counts.CacheWriteInputTokens, e.Counts.OutputTokens, e.Counts.ReasoningOutputTokens, e.Counts.TotalTokens, e.Timestamp.Format(time.RFC3339Nano))
 		return err
 	}
 	if e.EventType == "live_estimate" {
@@ -220,14 +224,24 @@ func (s *server) applyEvent(tx *sql.Tx, e UsageEvent) error {
 	}
 	old := TokenCounts{}
 	epoch := 0
-	err = tx.QueryRow("SELECT epoch,input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,total_tokens FROM conversation_counters WHERE host_id=? AND conversation_id=?", e.HostID, e.ConversationID).Scan(&epoch, &old.InputTokens, &old.CachedInputTokens, &old.CacheWriteInputTokens, &old.OutputTokens, &old.ReasoningOutputTokens, &old.TotalTokens)
+	sourceFound := false
+	err = tx.QueryRow("SELECT epoch,input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,total_tokens FROM source_counters WHERE host_id=? AND source_file_id=?", e.HostID, e.SourceFileID).Scan(&epoch, &old.InputTokens, &old.CachedInputTokens, &old.CacheWriteInputTokens, &old.OutputTokens, &old.ReasoningOutputTokens, &old.TotalTokens)
+	if err == nil {
+		sourceFound = true
+	}
+	if !sourceFound {
+		err = tx.QueryRow("SELECT epoch,input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,total_tokens FROM conversation_counters WHERE host_id=? AND conversation_id=?", e.HostID, e.ConversationID).Scan(&epoch, &old.InputTokens, &old.CachedInputTokens, &old.CacheWriteInputTokens, &old.OutputTokens, &old.ReasoningOutputTokens, &old.TotalTokens)
+	}
 	if errors.Is(err, sql.ErrNoRows) && e.ParentConversationID != "" {
 		_ = tx.QueryRow("SELECT input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,total_tokens FROM conversation_counters WHERE host_id=? AND conversation_id=?", e.HostID, e.ParentConversationID).Scan(&old.InputTokens, &old.CachedInputTokens, &old.CacheWriteInputTokens, &old.OutputTokens, &old.ReasoningOutputTokens, &old.TotalTokens)
 	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	reset := e.Counts.TotalTokens < old.TotalTokens
+	reset := (!sourceFound && e.Counts.TotalTokens < old.TotalTokens) || (sourceFound && e.SourceEpoch > epoch)
 	d := deltaCounts(e.Counts, old, reset)
+	if sourceFound && e.SourceEpoch == epoch && e.Counts.TotalTokens < old.TotalTokens {
+		d = TokenCounts{CacheWriteVisible: e.Counts.CacheWriteVisible}
+	}
 	if reset {
 		epoch++
 	}
@@ -252,6 +266,12 @@ func (s *server) applyEvent(tx *sql.Tx, e UsageEvent) error {
 	if err != nil {
 		return err
 	}
+	if !sourceFound || reset || e.Counts.TotalTokens > old.TotalTokens {
+		_, err = tx.Exec(`INSERT INTO source_counters(host_id,source_file_id,epoch,input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,total_tokens,updated_at)VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(host_id,source_file_id) DO UPDATE SET epoch=excluded.epoch,input_tokens=excluded.input_tokens,cached_input_tokens=excluded.cached_input_tokens,cache_write_input_tokens=excluded.cache_write_input_tokens,output_tokens=excluded.output_tokens,reasoning_output_tokens=excluded.reasoning_output_tokens,total_tokens=excluded.total_tokens,updated_at=excluded.updated_at`, e.HostID, e.SourceFileID, e.SourceEpoch, e.Counts.InputTokens, e.Counts.CachedInputTokens, e.Counts.CacheWriteInputTokens, e.Counts.OutputTokens, e.Counts.ReasoningOutputTokens, e.Counts.TotalTokens, e.Timestamp.Format(time.RFC3339Nano))
+		if err != nil {
+			return err
+		}
+	}
 	var estimate int64
 	_ = tx.QueryRow("SELECT live_estimate FROM sessions WHERE host_id=? AND conversation_id=?", e.HostID, e.ConversationID).Scan(&estimate)
 	if estimate > 0 {
@@ -264,8 +284,11 @@ func (s *server) applyEvent(tx *sql.Tx, e UsageEvent) error {
 func deltaCounts(n, o TokenCounts, reset bool) TokenCounts {
 	d := TokenCounts{CacheWriteVisible: n.CacheWriteVisible}
 	f := func(a, b int64) int64 {
-		if reset || a < b {
+		if reset {
 			return a
+		}
+		if a < b {
+			return 0
 		}
 		return a - b
 	}

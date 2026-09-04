@@ -30,6 +30,6 @@ Relevant observed paths:
 
 No visible `delta` or `text_delta` path was observed in the two-file sample. The parser supports such a field if it appears later, tokenizes the value locally, immediately discards the text, and uploads only the token count.
 
-Some derived sub-conversations in current Codex logs are identified as `ctco_*` or `fco_*` and do not carry an explicit parent field. For these verified forms only, the containing main log's stable conversation UUID is used as the parent. Their copied cumulative prefix is subtracted from the parent's latest counter.
+Some derived sub-conversations in current Codex logs are identified as `ctco_*` or `fco_*` and do not carry an explicit parent field. For these verified forms only, the containing main log's stable conversation UUID is used as the parent. A source-log watermark shared by all conversations in that file removes their copied cumulative prefix; file truncation advances the source epoch.
 
 Parser version: `codex-jsonl-v1`. Unknown or malformed records are skipped without stopping collection. A partial final line is held until its newline arrives.

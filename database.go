@@ -56,6 +56,13 @@ CREATE TABLE IF NOT EXISTS conversation_counters (
  reasoning_output_tokens INTEGER NOT NULL, total_tokens INTEGER NOT NULL,
  updated_at TEXT NOT NULL, PRIMARY KEY(host_id, conversation_id)
 );
+CREATE TABLE IF NOT EXISTS source_counters (
+ host_id TEXT NOT NULL, source_file_id TEXT NOT NULL, epoch INTEGER NOT NULL DEFAULT 0,
+ input_tokens INTEGER NOT NULL, cached_input_tokens INTEGER NOT NULL,
+ cache_write_input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+ reasoning_output_tokens INTEGER NOT NULL, total_tokens INTEGER NOT NULL,
+ updated_at TEXT NOT NULL, PRIMARY KEY(host_id,source_file_id)
+);
 CREATE TABLE IF NOT EXISTS usage_events (
  id INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE,
  dedup_key TEXT, host_id TEXT NOT NULL, conversation_id TEXT NOT NULL,

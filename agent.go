@@ -213,6 +213,7 @@ func scanOne(db *sql.DB, cfg *AgentConfig, path string, backfill, baselineNew bo
 		line = bytes.TrimSuffix(line, []byte{'\n'})
 		line = bytes.TrimSuffix(line, []byte{'\r'})
 		if ev, ok := parseCodexLine(line, cfg.HostID, sid, lineStart, &pc); ok {
+			ev.SourceEpoch = generation
 			ev.EventID = stableID(ev.EventID, fmt.Sprint(generation))
 			b, _ := json.Marshal(ev)
 			_, _ = db.Exec("INSERT OR IGNORE INTO spool(event_id,payload,created_at)VALUES(?,?,?)", ev.EventID, b, time.Now().UTC().Format(time.RFC3339Nano))

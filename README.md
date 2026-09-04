@@ -35,7 +35,7 @@ Do not run `backfill` unless importing pre-baseline history is intended.
 
 ## Accuracy model
 
-- Exact events use positive deltas of `total_token_usage`, keyed by host and conversation.
+- Exact events use positive deltas of `total_token_usage`. Presentation state is keyed by host and conversation; the accounting watermark is keyed by host, source log, and file epoch so copied `ctco_*`/`fco_*` prefixes are counted once.
 - Equal totals add zero. A lower total starts a new counter epoch.
 - Stable event IDs and response/turn deduplication prevent replay and path duplication.
 - Archived moves retain the source UUID and byte checkpoint.

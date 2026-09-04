@@ -325,6 +325,32 @@ func TestImplicitFCOParentPrefix(t *testing.T) {
 	}
 }
 
+func TestSharedSourceCounterAcrossManyChildren(t *testing.T) {
+	s, done := testServerDB(t)
+	defer done()
+	source := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	base := UsageEvent{EventID: "b", HostID: "h", ConversationID: source, SourceFileID: source, EventType: "baseline", Timestamp: time.Now(), Counts: counts(1000, 500, 20, 100, 20)}
+	tx, _ := s.db.Begin()
+	s.applyEvent(tx, base)
+	tx.Commit()
+	for i, raw := range []int64{1100, 1200} {
+		e := base
+		e.EventID = fmt.Sprintf("child%d", i)
+		e.EventType = "exact_usage"
+		e.ConversationID = fmt.Sprintf("ctco_child%d", i)
+		e.TurnID = fmt.Sprintf("turn%d", i)
+		e.Counts = counts(raw, 500+int64(i+1)*20, 20, 100+int64(i+1)*10, 20)
+		tx, _ = s.db.Begin()
+		s.applyEvent(tx, e)
+		tx.Commit()
+	}
+	var sum int64
+	s.db.QueryRow("SELECT SUM(total_tokens) FROM sessions").Scan(&sum)
+	if sum != 220 {
+		t.Fatalf("shared source prefix repeated: %d", sum)
+	}
+}
+
 func TestLongContextPricingAndHistory(t *testing.T) {
 	s, done := testServerDB(t)
 	defer done()
