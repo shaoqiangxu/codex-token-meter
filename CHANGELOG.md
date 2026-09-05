@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use semantic versioning.
 
+## [0.1.1] - 2026-09-05
+
+### Fixed
+
+- Make the Windows in-place updater retry a verified copy after stopping the running Agent, avoiding PowerShell 5.1 `Move-Item` collisions when the destination executable already exists.
+
 ## [0.1.0] - 2026-09-05
 
 ### Added
@@ -20,4 +26,5 @@ All notable changes to this project are documented here. The format follows
 - Keep response-item IDs (`msg_*`, `ctc_*`, `ctco_*`) separate from the owning Codex task ID so tool calls cannot create fake sessions.
 - Detect cumulative Token counter restarts inside an append-only rollout file and begin a new source epoch without losing usage.
 
+[0.1.1]: https://github.com/shaoqiangxu/codex-token-meter/releases/tag/v0.1.1
 [0.1.0]: https://github.com/shaoqiangxu/codex-token-meter/releases/tag/v0.1.0

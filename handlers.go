@@ -678,8 +678,19 @@ $vbs='CreateObject("Wscript.Shell").Run """'+$exe+'"" agent --config ""'+$cfg+'"
 Set-Content -LiteralPath $launcher -Value $vbs -Encoding ASCII
 Stop-ScheduledTask -TaskName 'CodexTokenMeter' -ErrorAction SilentlyContinue
 $running=Get-Process -Name 'codex-meter' -ErrorAction SilentlyContinue | Where-Object {$_.Path -eq $exe}
-$running | Stop-Process -Force
-Move-Item -LiteralPath $next -Destination $exe -Force
+$running | Stop-Process -Force -ErrorAction SilentlyContinue
+$updated=$false
+for($attempt=0; $attempt -lt 40; $attempt++){
+  try {
+    Copy-Item -LiteralPath $next -Destination $exe -Force -ErrorAction Stop
+    $updated=$true
+    break
+  } catch {
+    Start-Sleep -Milliseconds 250
+  }
+}
+if(!$updated){throw 'Unable to replace codex-meter.exe after waiting 10 seconds'}
+Remove-Item -LiteralPath $next -Force -ErrorAction SilentlyContinue
 $action=New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot 'System32\wscript.exe') -Argument ('"'+$launcher+'"')
 $trigger=New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 Register-ScheduledTask -TaskName 'CodexTokenMeter' -Action $action -Trigger $trigger -Force | Out-Null

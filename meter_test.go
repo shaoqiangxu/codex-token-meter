@@ -39,6 +39,9 @@ func TestArtifactDownloadsAreVersionedAndNotCached(t *testing.T) {
 	if repair.Code != http.StatusOK || !strings.Contains(repair.Body.String(), wantURL) {
 		t.Fatalf("repair installer is not tied to artifact hash: status=%d body=%q", repair.Code, repair.Body.String())
 	}
+	if !strings.Contains(repair.Body.String(), "Copy-Item -LiteralPath $next -Destination $exe -Force") || strings.Contains(repair.Body.String(), "Move-Item -LiteralPath $next -Destination $exe -Force") {
+		t.Fatal("repair installer does not use retryable in-place replacement")
+	}
 
 	download := httptest.NewRecorder()
 	s.download(download, httptest.NewRequest(http.MethodGet, "/downloads/"+name+"?sha256="+sum, nil))
