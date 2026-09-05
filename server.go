@@ -29,6 +29,7 @@ type server struct {
 	login       map[string][]time.Time
 	ingestMu    sync.Mutex
 	ingestTimes map[string][]time.Time
+	snapshots   snapshotCache
 }
 
 func runServer(ctx context.Context, configPath string) error {
