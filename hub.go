@@ -180,6 +180,13 @@ func (h *eventHub) serve(w http.ResponseWriter, r *http.Request, snapshot func()
 			return
 		case m := <-c:
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if m.Event == "numbers" {
+				var value map[string]any
+				if json.Unmarshal(m.Data, &value) == nil {
+					value["sse_emit_at"] = time.Now().UTC()
+					m.Data, _ = json.Marshal(value)
+				}
+			}
 			event := "update"
 			if notify {
 				event = "changed"

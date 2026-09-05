@@ -70,6 +70,7 @@ func (s *server) heartbeat() any {
 	m := s.watermark()
 	m["hosts"] = s.hostViews()
 	m["runtime"] = s.runtimeViews()
+	m["delivery_trace"] = s.traces.recent()
 	m["realtime_config"] = s.cfg.Realtime.normalized()
 	return m
 }
@@ -91,6 +92,15 @@ func (s *server) attachWatermark(value map[string]any, queryKey string, started 
 	value["query_key"] = queryKey
 	value["server_build_ms"] = float64(time.Since(started).Microseconds()) / 1000
 	value["realtime_config"] = s.cfg.Realtime.normalized()
+	traces := []DeliveryTrace{}
+	start, _ := value["range_start"].(time.Time)
+	end, _ := value["range_end"].(time.Time)
+	for _, trace := range s.traces.recent() {
+		if trace.Kind != "exact_usage" || (!trace.SourceAt.Before(start) && trace.SourceAt.Before(end)) {
+			traces = append(traces, trace)
+		}
+	}
+	value["delivery_trace"] = traces
 }
 
 func decodeTelemetry(b []byte) *AgentTelemetry {

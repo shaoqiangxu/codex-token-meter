@@ -695,6 +695,7 @@ function connect() {
     if (eventStream !== events || document.hidden || rangeDraft) return;
     try {
       const data = JSON.parse(event.data);
+      data.sse_received_browser_at = new Date().toISOString();
       connection.received();
       window.meterDiagnostics = {...window.meterDiagnostics, sse_received_at: new Date().toISOString()};
       action(data);
@@ -729,6 +730,7 @@ function connect() {
 }
 
 function applyConfirmed(data, timing) {
+  const applyStarted=performance.now();
   if (!realtime.acceptsSnapshot(state, data, connection.expectedEpoch)) {
     if (data.server_epoch && data.server_epoch !== state.server_epoch) connect();
     else scheduleRefresh();
@@ -753,6 +755,9 @@ function applyConfirmed(data, timing) {
   updateText($('#loadStatus'), `已筛选：${periodLabels[data.period] || '今天'}`);
   $('#cards').setAttribute('aria-busy', 'false');
   updateConnectionUI();
+  const entries=window.meterDeliveryTrace || [];
+  for (const trace of data.delivery_trace || []) if (!entries.some(item=>item.event_id===trace.event_id)) entries.push({...trace,sse_emit_at:data.sse_emit_at,sse_received_browser_at:data.sse_received_browser_at,browser_applied_at:new Date().toISOString(),browser_apply_ms:performance.now()-applyStarted,task_visible:(data.sessions||[]).some(row=>row.conversation_id===trace.conversation_id),runtime_state:(data.runtime||[]).find(row=>row.conversation_id===trace.conversation_id)?.runtime_state});
+  window.meterDeliveryTrace=entries.slice(-128);
 }
 
 function applyPulse(data) {

@@ -247,6 +247,7 @@ func scanOne(db *sql.DB, cfg *AgentConfig, path string, backfill, baselineNew bo
 }
 
 func scanOneTx(db *sql.Tx, cfg *AgentConfig, path string, backfill, baselineNew bool) error {
+	observedAt := time.Now().UTC()
 	st, err := os.Stat(path)
 	if err != nil {
 		return nil
@@ -320,6 +321,7 @@ func scanOneTx(db *sql.Tx, cfg *AgentConfig, path string, backfill, baselineNew 
 			}
 			ev.SourceEpoch = generation
 			ev.EventID = stableID(ev.EventID, fmt.Sprint(generation))
+			ev.Trace = &DeliveryTrace{ObservedAt: observedAt, QueuedAt: time.Now().UTC()}
 			b, _ := json.Marshal(ev)
 			if _, err := db.Exec("INSERT OR IGNORE INTO spool(event_id,payload,created_at)VALUES(?,?,?)", ev.EventID, b, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 				return err
@@ -414,6 +416,11 @@ func flushSpool(ctx context.Context, db *sql.DB, cfg *AgentConfig) error {
 			return nil
 		}
 		batch.Telemetry = agentTelemetry(cfg)
+		for i := range batch.Events {
+			if batch.Events[i].Trace != nil {
+				batch.Events[i].Trace.SentAt = time.Now().UTC()
+			}
+		}
 		body, _ := json.Marshal(batch)
 		req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(cfg.ServerURL, "/")+"/api/ingest", bytes.NewReader(body))
 		if err != nil {

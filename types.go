@@ -18,27 +18,28 @@ type TokenCounts struct {
 }
 
 type UsageEvent struct {
-	EventID              string      `json:"event_id"`
-	HostID               string      `json:"host_id"`
-	SourceFileID         string      `json:"source_file_id"`
-	ByteOffset           int64       `json:"byte_offset"`
-	SourceEpoch          int         `json:"source_epoch"`
-	EventType            string      `json:"event_type"`
-	Timestamp            time.Time   `json:"timestamp"`
-	ConversationID       string      `json:"conversation_id"`
-	ParentConversationID string      `json:"parent_conversation_id,omitempty"`
-	TurnID               string      `json:"turn_id,omitempty"`
-	ResponseID           string      `json:"response_id,omitempty"`
-	ProjectID            string      `json:"project_id,omitempty"`
-	RepoName             string      `json:"repo_name,omitempty"`
-	Model                string      `json:"model,omitempty"`
-	ReasoningEffort      string      `json:"reasoning_effort,omitempty"`
-	ModelContextWindow   int64       `json:"model_context_window,omitempty"`
-	Counts               TokenCounts `json:"counts"`
-	DataQuality          string      `json:"data_quality"`
-	ParserVersion        string      `json:"parser_version"`
-	LiveEstimate         int64       `json:"live_estimate,omitempty"`
-	RunState             string      `json:"runtime_state,omitempty"`
+	EventID              string         `json:"event_id"`
+	HostID               string         `json:"host_id"`
+	SourceFileID         string         `json:"source_file_id"`
+	ByteOffset           int64          `json:"byte_offset"`
+	SourceEpoch          int            `json:"source_epoch"`
+	EventType            string         `json:"event_type"`
+	Timestamp            time.Time      `json:"timestamp"`
+	ConversationID       string         `json:"conversation_id"`
+	ParentConversationID string         `json:"parent_conversation_id,omitempty"`
+	TurnID               string         `json:"turn_id,omitempty"`
+	ResponseID           string         `json:"response_id,omitempty"`
+	ProjectID            string         `json:"project_id,omitempty"`
+	RepoName             string         `json:"repo_name,omitempty"`
+	Model                string         `json:"model,omitempty"`
+	ReasoningEffort      string         `json:"reasoning_effort,omitempty"`
+	ModelContextWindow   int64          `json:"model_context_window,omitempty"`
+	Counts               TokenCounts    `json:"counts"`
+	DataQuality          string         `json:"data_quality"`
+	ParserVersion        string         `json:"parser_version"`
+	LiveEstimate         int64          `json:"live_estimate,omitempty"`
+	RunState             string         `json:"runtime_state,omitempty"`
+	Trace                *DeliveryTrace `json:"trace,omitempty"`
 }
 
 // SessionMetadata contains display-only identifiers. The agent intentionally

@@ -33,6 +33,7 @@ type server struct {
 	snapshots   snapshotCache
 	viewMu      sync.RWMutex
 	numeric     numericViews
+	traces      deliveryTraces
 }
 
 func runServer(ctx context.Context, configPath string) error {
@@ -146,7 +147,9 @@ func (s *server) ingest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "rate limited", http.StatusTooManyRequests)
 		return
 	}
+	lockStarted := time.Now()
 	s.viewMu.Lock()
+	lockMS := float64(time.Since(lockStarted).Microseconds()) / 1000
 	defer s.viewMu.Unlock()
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -155,6 +158,7 @@ func (s *server) ingest(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 	changed := false
+	var traced []UsageEvent
 	for _, e := range b.Events {
 		if e.HostID != b.HostID || !validUsageEvent(e) {
 			http.Error(w, "host mismatch", 403)
@@ -166,6 +170,9 @@ func (s *server) ingest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		changed = changed || !exists
+		if !exists {
+			traced = append(traced, e)
+		}
 		if err = s.applyEvent(tx, e); err != nil {
 			http.Error(w, "ingest failed", 500)
 			return
@@ -194,10 +201,12 @@ func (s *server) ingest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "db", 500)
 		return
 	}
+	commitStarted := time.Now()
 	if err = tx.Commit(); err != nil {
 		http.Error(w, "db", 500)
 		return
 	}
+	s.traces.add(traced, started, time.Now().UTC(), lockMS, float64(time.Since(commitStarted).Microseconds())/1000)
 	// Heartbeats update freshness, not history; replays do not advance data.
 	if changed || len(b.Metadata) > 0 {
 		s.hub.mark()
