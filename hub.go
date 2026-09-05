@@ -215,6 +215,9 @@ func (h *eventHub) serve(w http.ResponseWriter, r *http.Request, snapshot func()
 				return
 			}
 			f.Flush()
+			h.mu.Lock()
+			h.lastSent = time.Now().UTC()
+			h.mu.Unlock()
 		case m := <-c:
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if m.Event == "numbers" {
