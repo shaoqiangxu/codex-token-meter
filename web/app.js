@@ -598,6 +598,7 @@ function createRangeLoader(fetcher, onData, onStatus) {
 let appliedQuery = 'period=today';
 let refreshTimer;
 let rangeLoader;
+let eventStream;
 function loadPeriod(manual = false) {
   if (manual) clearTimeout(refreshTimer);
   if (manual) refreshTimer = undefined;
@@ -632,7 +633,9 @@ function applyRange() {
   }
 }
 function connect() {
+  eventStream?.close();
   const events = new EventSource('/events?notify=1');
+  eventStream = events;
   events.onopen = () => {
     $('#sse').textContent = '实时已连接';
     $('#sse').className = 'pill online';
@@ -645,8 +648,6 @@ function connect() {
     // EventSource reconnects itself. One slow fallback timer below covers both
     // disconnected streams and changes to online/active status without events.
   };
-  window.addEventListener('pagehide', () => events.close(), {once: true});
-  window.addEventListener('pageshow', event => { if (event.persisted) { connect(); loadPeriod(true); } }, {once: true});
 }
 
 function startDashboard() {
@@ -697,6 +698,8 @@ function startDashboard() {
   });
   loadPeriod(true);
   connect();
+  window.addEventListener('pagehide', () => eventStream?.close());
+  window.addEventListener('pageshow', event => { if (event.persisted) { connect(); loadPeriod(true); } });
   setInterval(() => { if (!document.hidden) loadPeriod(); }, 15000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) loadPeriod(); });
 }
