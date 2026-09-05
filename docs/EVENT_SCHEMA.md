@@ -13,7 +13,9 @@ Relevant observed paths:
 
 | Path | Type / semantics |
 |---|---|
-| `payload.session_id`, `payload.thread_id`, `payload.id` | string identifiers |
+| `payload.session_id`, `payload.thread_id` | authoritative conversation identifiers when present |
+| `session_meta.payload.id` | session identifier fallback used only on `session_meta` records |
+| `response_item.payload.id` | item identifier (`msg_*`, `ctc_*`, `ctco_*`, etc.); never treated as a conversation identifier |
 | `payload.turn_id`, nested metadata `turn_id` | string |
 | `payload.cwd`, `payload.thread_settings.cwd` | string; reduced to repository/project identity before upload |
 | `payload.model`, `payload.thread_settings.model` | string |
@@ -32,8 +34,8 @@ No visible `delta` or `text_delta` path was observed in the two-file sample. The
 
 Display names are obtained separately from the local Codex state database. The agent's query explicitly selects only `threads.id`, `threads.name`, agent nickname/path, `cwd`, Git origin, and project ID/name metadata. An agent path is reduced to its basename locally. The agent does not query `title`, `first_user_message`, `preview`, or any conversation body. Names are whitespace-normalized and limited to 100 Unicode characters before upload.
 
-Some derived sub-conversations in current Codex logs are identified as `ctco_*` or `fco_*` and do not carry an explicit parent field. For these verified forms only, the containing main log's stable conversation UUID is used as the parent. A source-log watermark shared by all conversations in that file removes their copied cumulative prefix; file truncation advances the source epoch.
+Some derived sub-conversations in current Codex logs are identified by an explicit `thread_id` such as `ctco_*` or `fco_*` and do not carry an explicit parent field. For these verified forms only, the containing main log's stable conversation UUID is used as the parent. A source-log watermark shared by all conversations in that file removes their copied cumulative prefix. File truncation or an observed decrease in the cumulative counter advances the source epoch, so a resumed task cannot silently lose usage.
 
-Parser version: `codex-jsonl-v1`. Unknown or malformed records are skipped without stopping collection. A partial final line is held until its newline arrives.
+Parser version: `codex-jsonl-v2`. Unknown or malformed records are skipped without stopping collection. A partial final line is held until its newline arrives.
 
 Cache-write visibility is tracked separately from its numeric value. An explicit zero is displayed as zero; only a genuinely absent field is displayed as unavailable.

@@ -1,5 +1,12 @@
 /dist/
+/bin/
 *.db
 *.db-shm
 *.db-wal
 initial-admin-password
+server.json
+agent.json
+.env
+*.local
+*.log
+coverage.out

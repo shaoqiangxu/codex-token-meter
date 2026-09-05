@@ -2,7 +2,7 @@ package main
 
 import "time"
 
-const parserVersion = "codex-jsonl-v1"
+const parserVersion = "codex-jsonl-v2"
 
 type TokenCounts struct {
 	InputTokens           int64 `json:"input_tokens"`

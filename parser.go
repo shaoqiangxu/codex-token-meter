@@ -33,8 +33,9 @@ func parseCodexLine(raw []byte, hostID, sourceID string, offset int64, pc *parse
 		return nil, false
 	}
 	payload, _ := root["payload"].(map[string]any)
+	recordType, _ := root["type"].(string)
 	previousTurn := pc.turnID
-	updateParseContext(payload, pc)
+	updateParseContext(recordType, payload, pc)
 	if pc.conversationID == "" {
 		pc.conversationID = sourceID
 	}
@@ -74,8 +75,16 @@ func parseCodexLine(raw []byte, hostID, sourceID string, offset int64, pc *parse
 	return nil, false
 }
 
-func updateParseContext(p map[string]any, pc *parseContext) {
-	for _, key := range []string{"session_id", "conversation_id", "thread_id", "id"} {
+func updateParseContext(recordType string, p map[string]any, pc *parseContext) {
+	// Response items also have an "id" (msg_*, ctc_*, ctco_*, and similar),
+	// but those identify an item rather than a Codex conversation. Treating an
+	// arbitrary item ID as a session splits one task into hundreds of fake
+	// sessions and prevents cumulative counters from reconciling.
+	keys := []string{"session_id", "conversation_id", "thread_id"}
+	if recordType == "session_meta" {
+		keys = append(keys, "id")
+	}
+	for _, key := range keys {
 		if s, _ := p[key].(string); s != "" && uuidInName.MatchString(s) {
 			pc.conversationID = s
 			break

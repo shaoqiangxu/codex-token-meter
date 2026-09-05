@@ -1,4 +1,4 @@
-module codex-token-meter
+module github.com/shaoqiangxu/codex-token-meter
 
 go 1.22
 

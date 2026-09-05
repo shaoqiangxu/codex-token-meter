@@ -2,12 +2,13 @@
 
 ## Services and health
 
-The server and local agent are systemd services. The server is restricted to `127.0.0.1:8787`; Cloudflare Tunnel is the only public route. `/healthz` checks process health and `/readyz` checks SQLite readiness.
+The server and local agent are systemd services. The server is restricted to `127.0.0.1:8787`; expose it only through a protected TLS reverse proxy or outbound tunnel. `/healthz` checks process health and `/readyz` checks SQLite readiness.
 
 ```sh
 systemctl restart codex-meter-agent
 systemctl restart codex-meter-server
-systemctl is-active codex-meter-server codex-meter-agent cloudflared-beszel codex-meter-backup.timer
+systemctl is-active codex-meter-server codex-meter-agent codex-meter-backup.timer
+# Also check the tunnel or reverse-proxy service used by your deployment.
 ```
 
 ## Backups and restore

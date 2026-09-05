@@ -19,11 +19,11 @@ import (
 )
 
 func migrateAgent(db *sql.DB) error {
-	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS files(source_file_id TEXT PRIMARY KEY,path TEXT NOT NULL,offset INTEGER NOT NULL,size INTEGER NOT NULL,mtime INTEGER NOT NULL,generation INTEGER NOT NULL DEFAULT 0,session_id TEXT,last_event_at TEXT,parser_version TEXT NOT NULL,model TEXT NOT NULL DEFAULT '',reasoning_effort TEXT NOT NULL DEFAULT '',project_id TEXT NOT NULL DEFAULT '',repo_name TEXT NOT NULL DEFAULT '',parent_id TEXT NOT NULL DEFAULT '',context_window INTEGER NOT NULL DEFAULT 0,turn_id TEXT NOT NULL DEFAULT '',response_id TEXT NOT NULL DEFAULT ''); CREATE TABLE IF NOT EXISTS spool(seq INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT NOT NULL UNIQUE,payload BLOB NOT NULL,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);`)
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS files(source_file_id TEXT PRIMARY KEY,path TEXT NOT NULL,offset INTEGER NOT NULL,size INTEGER NOT NULL,mtime INTEGER NOT NULL,generation INTEGER NOT NULL DEFAULT 0,session_id TEXT,last_event_at TEXT,parser_version TEXT NOT NULL,model TEXT NOT NULL DEFAULT '',reasoning_effort TEXT NOT NULL DEFAULT '',project_id TEXT NOT NULL DEFAULT '',repo_name TEXT NOT NULL DEFAULT '',parent_id TEXT NOT NULL DEFAULT '',context_window INTEGER NOT NULL DEFAULT 0,turn_id TEXT NOT NULL DEFAULT '',response_id TEXT NOT NULL DEFAULT '',last_counter_total INTEGER NOT NULL DEFAULT 0,counter_initialized INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS spool(seq INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT NOT NULL UNIQUE,payload BLOB NOT NULL,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);`)
 	if err != nil {
 		return err
 	}
-	for _, col := range []string{"model TEXT NOT NULL DEFAULT ''", "reasoning_effort TEXT NOT NULL DEFAULT ''", "project_id TEXT NOT NULL DEFAULT ''", "repo_name TEXT NOT NULL DEFAULT ''", "parent_id TEXT NOT NULL DEFAULT ''", "context_window INTEGER NOT NULL DEFAULT 0", "turn_id TEXT NOT NULL DEFAULT ''", "response_id TEXT NOT NULL DEFAULT ''"} {
+	for _, col := range []string{"model TEXT NOT NULL DEFAULT ''", "reasoning_effort TEXT NOT NULL DEFAULT ''", "project_id TEXT NOT NULL DEFAULT ''", "repo_name TEXT NOT NULL DEFAULT ''", "parent_id TEXT NOT NULL DEFAULT ''", "context_window INTEGER NOT NULL DEFAULT 0", "turn_id TEXT NOT NULL DEFAULT ''", "response_id TEXT NOT NULL DEFAULT ''", "last_counter_total INTEGER NOT NULL DEFAULT 0", "counter_initialized INTEGER NOT NULL DEFAULT 0"} {
 		_, _ = db.Exec("ALTER TABLE files ADD COLUMN " + col)
 	}
 	return nil
@@ -53,7 +53,7 @@ func runAgent(ctx context.Context, configPath string, once, backfill bool) error
 		cfg.CodexHomes = codexHomesDefault()
 	}
 	if backfill {
-		if _, err := db.Exec("UPDATE files SET offset=0,generation=generation+1"); err != nil {
+		if _, err := db.Exec("UPDATE files SET offset=0,generation=generation+1,last_counter_total=0,counter_initialized=0"); err != nil {
 			return err
 		}
 	}
@@ -195,8 +195,10 @@ func scanOne(db *sql.DB, cfg *AgentConfig, path string, backfill, baselineNew bo
 	sid := sourceIdentity(path)
 	var offset, size int64
 	var generation int
+	var lastCounterTotal int64
+	var counterInitialized bool
 	pc := parseContext{conversationID: sid}
-	err = db.QueryRow("SELECT offset,size,generation,COALESCE(session_id,''),model,reasoning_effort,project_id,repo_name,parent_id,context_window,turn_id,response_id FROM files WHERE source_file_id=?", sid).Scan(&offset, &size, &generation, &pc.conversationID, &pc.model, &pc.effort, &pc.projectID, &pc.repoName, &pc.parentID, &pc.contextWindow, &pc.turnID, &pc.responseID)
+	err = db.QueryRow("SELECT offset,size,generation,COALESCE(session_id,''),model,reasoning_effort,project_id,repo_name,parent_id,context_window,turn_id,response_id,last_counter_total,counter_initialized FROM files WHERE source_file_id=?", sid).Scan(&offset, &size, &generation, &pc.conversationID, &pc.model, &pc.effort, &pc.projectID, &pc.repoName, &pc.parentID, &pc.contextWindow, &pc.turnID, &pc.responseID, &lastCounterTotal, &counterInitialized)
 	if errors.Is(err, sql.ErrNoRows) {
 		start := int64(0)
 		if baselineNew {
@@ -218,6 +220,8 @@ func scanOne(db *sql.DB, cfg *AgentConfig, path string, backfill, baselineNew bo
 	if st.Size() < offset {
 		offset = 0
 		generation++
+		lastCounterTotal = 0
+		counterInitialized = false
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -242,6 +246,17 @@ func scanOne(db *sql.DB, cfg *AgentConfig, path string, backfill, baselineNew bo
 		line = bytes.TrimSuffix(line, []byte{'\n'})
 		line = bytes.TrimSuffix(line, []byte{'\r'})
 		if ev, ok := parseCodexLine(line, cfg.HostID, sid, lineStart, &pc); ok {
+			if ev.EventType == "exact_usage" {
+				// Codex can restart its cumulative token counter inside the same
+				// append-only rollout file (for example after a task is resumed).
+				// Advance the source epoch so the server counts the new run instead
+				// of mistaking every smaller cumulative value for stale data.
+				if counterInitialized && ev.Counts.TotalTokens < lastCounterTotal {
+					generation++
+				}
+				lastCounterTotal = ev.Counts.TotalTokens
+				counterInitialized = true
+			}
 			ev.SourceEpoch = generation
 			ev.EventID = stableID(ev.EventID, fmt.Sprint(generation))
 			b, _ := json.Marshal(ev)
@@ -251,7 +266,7 @@ func scanOne(db *sql.DB, cfg *AgentConfig, path string, backfill, baselineNew bo
 			break
 		}
 	}
-	_, err = db.Exec("UPDATE files SET path=?,offset=?,size=?,mtime=?,generation=?,session_id=?,last_event_at=?,parser_version=?,model=?,reasoning_effort=?,project_id=?,repo_name=?,parent_id=?,context_window=?,turn_id=?,response_id=? WHERE source_file_id=?", path, current, st.Size(), st.ModTime().UnixNano(), generation, pc.conversationID, time.Now().UTC().Format(time.RFC3339Nano), parserVersion, pc.model, pc.effort, pc.projectID, pc.repoName, pc.parentID, pc.contextWindow, pc.turnID, pc.responseID, sid)
+	_, err = db.Exec("UPDATE files SET path=?,offset=?,size=?,mtime=?,generation=?,session_id=?,last_event_at=?,parser_version=?,model=?,reasoning_effort=?,project_id=?,repo_name=?,parent_id=?,context_window=?,turn_id=?,response_id=?,last_counter_total=?,counter_initialized=? WHERE source_file_id=?", path, current, st.Size(), st.ModTime().UnixNano(), generation, pc.conversationID, time.Now().UTC().Format(time.RFC3339Nano), parserVersion, pc.model, pc.effort, pc.projectID, pc.repoName, pc.parentID, pc.contextWindow, pc.turnID, pc.responseID, lastCounterTotal, counterInitialized, sid)
 	return err
 }
 

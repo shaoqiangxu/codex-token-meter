@@ -134,6 +134,67 @@ func TestParserUsagePrivacyAndCacheWrite(t *testing.T) {
 	}
 }
 
+func TestResponseItemIDDoesNotReplaceConversation(t *testing.T) {
+	const sessionID = "11111111-1111-1111-1111-111111111111"
+	pc := parseContext{}
+	meta := `{"timestamp":"2026-09-04T00:00:00Z","type":"session_meta","payload":{"id":"` + sessionID + `"}}`
+	if _, ok := parseCodexLine([]byte(meta), "h", sessionID, 0, &pc); ok {
+		t.Fatal("session metadata unexpectedly emitted usage")
+	}
+	item := `{"timestamp":"2026-09-04T00:00:01Z","type":"response_item","payload":{"type":"custom_tool_call_output","id":"ctco_22222222-2222-2222-2222-222222222222"}}`
+	parseCodexLine([]byte(item), "h", sessionID, 1, &pc)
+	usage := `{"timestamp":"2026-09-04T00:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":1,"total_tokens":105}}}}`
+	e, ok := parseCodexLine([]byte(usage), "h", sessionID, 2, &pc)
+	if !ok || e.ConversationID != sessionID {
+		t.Fatalf("response item ID replaced conversation: %+v", e)
+	}
+}
+
+func TestAgentDetectsCounterResetInAppendOnlyFile(t *testing.T) {
+	d := t.TempDir()
+	const sessionID = "33333333-3333-3333-3333-333333333333"
+	p := filepath.Join(d, "rollout-"+sessionID+".jsonl")
+	line := func(at string, total int64) string {
+		return fmt.Sprintf(`{"timestamp":%q,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":%d,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":%d}}}}`+"\n", at, total, total)
+	}
+	data := line("2026-09-04T00:00:00Z", 100) + line("2026-09-04T00:00:01Z", 150) + line("2026-09-04T00:00:02Z", 20) + line("2026-09-04T00:00:03Z", 30)
+	if err := os.WriteFile(p, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openSQLite(filepath.Join(d, "agent.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err = migrateAgent(db); err != nil {
+		t.Fatal(err)
+	}
+	cfg := AgentConfig{HostID: "h"}
+	if err = scanOne(db, &cfg, p, true, false); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.Query("SELECT payload FROM spool ORDER BY seq")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var epochs []int
+	for rows.Next() {
+		var payload []byte
+		var event UsageEvent
+		if err = rows.Scan(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if err = json.Unmarshal(payload, &event); err != nil {
+			t.Fatal(err)
+		}
+		epochs = append(epochs, event.SourceEpoch)
+	}
+	if fmt.Sprint(epochs) != "[0 0 1 1]" {
+		t.Fatalf("counter reset epochs=%v", epochs)
+	}
+}
+
 func TestPartialLineCheckpointMoveAndRestart(t *testing.T) {
 	d := t.TempDir()
 	home := filepath.Join(d, ".codex")
