@@ -19,7 +19,7 @@ node tests/frontend_test.js
 go build ./...
 ```
 
-要求 Go 1.22 或更高版本。前端没有 npm 依赖，测试只需要 Node.js。
+要求 Go 1.25 或更高版本。前端没有 npm 依赖，测试只需要 Node.js。
 
 ## Pull Request 要求
 

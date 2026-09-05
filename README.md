@@ -3,7 +3,7 @@
 > 本地优先、跨平台、可核验的 Codex Token 用量仪表盘。
 
 [![CI](https://github.com/shaoqiangxu/codex-token-meter/actions/workflows/ci.yml/badge.svg)](https://github.com/shaoqiangxu/codex-token-meter/actions/workflows/ci.yml)
-[![Go 1.22+](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go)](https://go.dev/)
+[![Go 1.25+](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 [English](README_EN.md) · [配置说明](docs/CONFIGURATION.md) · [运维手册](docs/OPERATIONS.md) · [安全设计](docs/SECURITY.md)
@@ -90,7 +90,7 @@ Agent 可以在本地读取 Codex 状态数据库中的 `threads.name` 来展示
 
 ### 1. 依赖
 
-- Go 1.22+
+- Go 1.25+
 - Linux 中央服务器（systemd、SQLite CLI、OpenSSL、curl、Python 3）
 - 一个带 TLS 的反向代理或 Cloudflare Tunnel
 - Node.js 仅用于运行前端测试

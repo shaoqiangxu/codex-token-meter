@@ -3,7 +3,7 @@
 > A local-first, cross-platform, auditable Codex token usage dashboard.
 
 [![CI](https://github.com/shaoqiangxu/codex-token-meter/actions/workflows/ci.yml/badge.svg)](https://github.com/shaoqiangxu/codex-token-meter/actions/workflows/ci.yml)
-[![Go 1.22+](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go)](https://go.dev/)
+[![Go 1.25+](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 [中文](README.md) · [Configuration](docs/CONFIGURATION.md) · [Operations](docs/OPERATIONS.md) · [Security design](docs/SECURITY.md)
@@ -45,7 +45,7 @@ Uploaded data is limited to random host/task identifiers, explicit task names, r
 
 ## Quick start
 
-Prerequisites: Go 1.22+, a Linux central host with systemd/SQLite/OpenSSL/curl/Python 3, and a TLS reverse proxy or Cloudflare Tunnel. Node.js is only needed for frontend tests.
+Prerequisites: Go 1.25+, a Linux central host with systemd/SQLite/OpenSSL/curl/Python 3, and a TLS reverse proxy or Cloudflare Tunnel. Node.js is only needed for frontend tests.
 
 ```bash
 sudo install -d -m 0755 -o "$(id -un)" -g "$(id -gn)" /opt/codex-token-meter

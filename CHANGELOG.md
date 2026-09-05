@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format follows
 ### Fixed
 
 - Make the Windows in-place updater retry a verified copy after stopping the running Agent, avoiding PowerShell 5.1 `Move-Item` collisions when the destination executable already exists.
+- Upgrade `golang.org/x/crypto` to the first currently supported security-fixed line and raise the source-build requirement to Go 1.25.
 
 ## [0.1.0] - 2026-09-05
 
