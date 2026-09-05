@@ -3,6 +3,19 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use semantic versioning.
 
+## [0.1.2] - 2026-09-05
+
+### Fixed
+
+- Use explicit Beijing time (UTC+8) for today/week/month, show interval boundaries, validate custom filters, and label totals for the selected period.
+- Replace per-event database price lookups with one historical rate-table read, preserving per-request thresholds and effective dates.
+- Remove full-snapshot history replay, aggregate outside the SSE lock, coalesce notifications, and avoid aggregation when nobody is watching.
+- Cancel obsolete range requests, preserve selected ranges during live updates, display loading/error/retry feedback, and fetch immediately on page load.
+- Return all matching session records instead of truncating at 500; compress snapshots and render raw table rows only when expanded.
+- Fit narrow mobile screens and iOS/WebKit controls: top-aligned range filters, labeled dates, stacked input/output numbers, safe-area padding, and collapsible management controls.
+
+Existing Windows and Linux agents remain compatible; this dashboard/server update does not require agent reinstallation.
+
 ## [0.1.1] - 2026-09-05
 
 ### Fixed
@@ -27,5 +40,6 @@ All notable changes to this project are documented here. The format follows
 - Keep response-item IDs (`msg_*`, `ctc_*`, `ctco_*`) separate from the owning Codex task ID so tool calls cannot create fake sessions.
 - Detect cumulative Token counter restarts inside an append-only rollout file and begin a new source epoch without losing usage.
 
+[0.1.2]: https://github.com/shaoqiangxu/codex-token-meter/releases/tag/v0.1.2
 [0.1.1]: https://github.com/shaoqiangxu/codex-token-meter/releases/tag/v0.1.1
 [0.1.0]: https://github.com/shaoqiangxu/codex-token-meter/releases/tag/v0.1.0

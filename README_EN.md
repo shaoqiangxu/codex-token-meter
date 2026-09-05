@@ -22,7 +22,9 @@ The monitor **does not invoke an LLM API and does not consume tokens itself**. O
 - Stable event IDs, response/turn deduplication, archive-move handling, and parent/child task aggregation.
 - Local SQLite checkpoints and an offline spool on every agent.
 - SQLite WAL on the central server with online backups and retention.
-- SSE live updates with REST polling fallback and in-place DOM patches that preserve expanded rows and selections.
+- Lightweight SSE change notifications, coalesced range requests, a 15-second REST fallback, and in-place patches preserving expanded rows and selections.
+- Explicit Beijing time (UTC+8) calendar ranges, rolling last-24-hours, validated custom ranges, and cancellation of obsolete requests.
+- Mobile cards with stacked input/output values, labeled date inputs, and lazily rendered raw records.
 - Project/repository and explicit Codex task-name metadata without reading conversation previews.
 - Historical OpenAI/Vercel equivalent pricing, Codex Credits equivalents, and ECB USD/CNY reference rates.
 - Loopback-only server binding, Argon2id admin authentication, CSRF protection, per-agent bearer tokens, and hardened systemd units.
@@ -71,11 +73,14 @@ See the [Chinese README](README.md) for metric semantics, the full privacy bound
 
 ## Development
 
+Calendar filters use Beijing time, independent of the browser/VPS timezone: today starts at 00:00, this week at Monday 00:00, and this month on day 1 at 00:00. Last 24 hours is a rolling interval ending now. Custom times are interpreted as UTC+8, inclusive of the start and exclusive of the end, at second precision. Current generation, active tasks (5 minutes), and online devices (15 seconds) are current-state metrics, not historical-range counts. All time includes collected data, not automatic pre-install history.
+
 ```bash
 go test -race ./...
 go vet ./...
 node --check web/app.js
 node tests/frontend_test.js
+node tests/range_test.js
 ```
 
 Do not attach real Codex sessions to issues or pull requests. Use minimal, synthetic, redacted schema fixtures.

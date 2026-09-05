@@ -52,7 +52,7 @@ func runServer(ctx context.Context, configPath string) error {
 		return err
 	}
 	s := &server{cfg: cfg, db: db, hub: newHub(), login: map[string][]time.Time{}, ingestTimes: map[string][]time.Time{}}
-	go s.hub.run(s.snapshot)
+	go s.hub.run(ctx, s.snapshot)
 	go s.vercelPriceLoop(ctx)
 	go s.openAIPriceLoop(ctx)
 	go s.exchangeRateLoop(ctx)
@@ -74,9 +74,7 @@ func runServer(ctx context.Context, configPath string) error {
 	mux.HandleFunc("/install/linux.sh", s.linuxInstaller)
 	mux.HandleFunc("/downloads/", s.download)
 	mux.HandleFunc("/events", s.requireAuth(func(w http.ResponseWriter, r *http.Request) { s.hub.serve(w, r, s.snapshot) }))
-	mux.HandleFunc("/api/snapshot", s.requireAuth(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, s.snapshotForRequest(r))
-	}))
+	mux.HandleFunc("/api/snapshot", s.requireAuth(s.serveSnapshot))
 	mux.HandleFunc("/api/enrollments", s.requireAuth(s.csrf(s.createEnrollment)))
 	mux.HandleFunc("/api/purchases", s.requireAuth(s.purchaseAPI))
 	mux.HandleFunc("/api/sessions/", s.requireAuth(s.sessionAPI))

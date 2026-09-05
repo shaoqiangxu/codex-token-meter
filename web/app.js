@@ -2,6 +2,7 @@ const $ = selector => document.querySelector(selector);
 let state = {sessions: [], hosts: [], totals: {}, project_totals: [], exchange_rate: {}};
 let renderedStructure = '';
 let structurePending = false;
+const periodLabels = {today: '今日', '24h': '最近24小时', week: '本周', month: '本月', all: '全部', custom: '所选时段'};
 
 function trimNumber(value, digits) {
   if (!Number.isFinite(Number(value))) return '0';
@@ -66,11 +67,12 @@ function duration(value) {
 function stamp(value) {
   if (!value) return '未验证';
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', {hour12: false});
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', {hour12: false, timeZone: 'Asia/Shanghai'});
 }
 
 function card(item) {
-  return `<div class="card" data-card="${esc(item.key)}"><div class="label">${esc(item.label)}</div><div class="value" data-card-value>${esc(item.value)}</div><div class="note" data-card-note>${esc(item.note)}</div></div>`;
+  const value = item.parts ? item.parts.map((part, i) => `<span class="value-part"><span class="part-label">${esc(part.label)}</span><span data-card-part="${i}">${esc(part.value)}</span></span>`).join('<span class="value-divider">/</span>') : esc(item.value);
+  return `<div class="card" data-card="${esc(item.key)}"><div class="label" data-card-label>${esc(item.label)}</div><div class="value${item.parts ? ' paired-value' : ''}" data-card-value>${value}</div><div class="note" data-card-note>${esc(item.note)}</div></div>`;
 }
 
 function selectionTouches(element) {
@@ -107,11 +109,11 @@ function dashboardCards(snapshot) {
   const writeValue = writeVisible ? tokenM(totals.cache_write_input_tokens) : '不可见';
   const writeNote = writeVisible && Number(totals.cache_write_input_tokens || 0) === 0 ? '日志明确上报写入为0' : writeVisible ? '日志已提供写入字段' : '当前日志未提供写入字段';
   return [
-    {key: 'exact', label: '今日精确 Token', value: tokenM(totals.total_tokens), note: '已结算 EXACT'},
-    {key: 'generating', label: '生成中临时 Token', value: generatingValue, note: generatingNote},
-    {key: 'io', label: '总输入 / 输出', value: `${tokenM(totals.input_tokens)}/${tokenM(totals.output_tokens)}`, note: `推理输出${tokenM(totals.reasoning_output_tokens)}`},
-    {key: 'cache', label: '缓存读取 / 写入', value: `${tokenM(totals.cached_input_tokens)}/${writeValue}`, note: `命中率${trimNumber(totals.cache_hit_rate || 0, 1)}% · ${writeNote}`},
-    {key: 'active', label: '活跃会话 / 在线设备', value: `${totals.active_sessions || 0}/${totals.online_hosts || 0}`, note: '5分钟内有事件 · 按设备和父会话去重'},
+    {key: 'exact', label: `${periodLabels[snapshot.period] || '今日'}精确 Token`, value: tokenM(totals.total_tokens), note: '所选时段内已结算 · EXACT'},
+    {key: 'generating', label: '当前生成中临时 Token', value: generatingValue, note: generatingNote},
+    {key: 'io', label: '总输入 / 输出', value: `${tokenM(totals.input_tokens)}/${tokenM(totals.output_tokens)}`, parts: [{label: '输入', value: tokenM(totals.input_tokens)}, {label: '输出', value: tokenM(totals.output_tokens)}], note: `推理输出${tokenM(totals.reasoning_output_tokens)}`},
+    {key: 'cache', label: '缓存读取 / 写入', value: `${tokenM(totals.cached_input_tokens)}/${writeValue}`, parts: [{label: '读取', value: tokenM(totals.cached_input_tokens)}, {label: '写入', value: writeValue}], note: `命中率${trimNumber(totals.cache_hit_rate || 0, 1)}% · ${writeNote}`},
+    {key: 'active', label: '当前活跃会话 / 在线设备', value: `${totals.active_sessions || 0}/${totals.online_hosts || 0}`, note: '近5分钟活跃 / 近15秒在线 · 不随时间筛选'},
     {key: 'openai', label: 'OpenAI API 等价', value: money(totals.api?.value), note: `${cny(totals.api_cny)} · 官方费率每日同步 · ${stamp(totals.api?.verified_at)}`},
     {key: 'vercel', label: 'Vercel 等价', value: money(totals.vercel?.value), note: `${cny(totals.vercel_cny)} · 模型目录每日同步 · ${stamp(totals.vercel?.verified_at)}`},
     {key: 'credits', label: 'Codex Credits 等价', value: credits(totals.credits?.value), note: totals.credits_purchase_usd ? `购买均价${money(totals.credits_purchase_usd)}/${cny(totals.credits_purchase_cny)}` : '未录入购买批次'},
@@ -131,7 +133,9 @@ function renderCards(snapshot) {
   }
   for (const item of items) {
     const element = [...container.querySelectorAll('[data-card]')].find(node => node.dataset.card === item.key);
-    updateText(element?.querySelector('[data-card-value]'), item.value);
+    updateText(element?.querySelector('[data-card-label]'), item.label);
+    if (item.parts) item.parts.forEach((part, i) => updateText(element?.querySelector(`[data-card-part="${i}"]`), part.value));
+    else updateText(element?.querySelector('[data-card-value]'), item.value);
     updateText(element?.querySelector('[data-card-note]'), item.note);
   }
 }
@@ -141,7 +145,10 @@ function render(snapshot, forceStructure = false) {
   renderCards(snapshot);
   if (forceStructure) renderedStructure = '';
   renderGroups(forceStructure);
-  updateText($('#updated'), `最后更新 ${new Date(snapshot.generated_at).toLocaleString('zh-CN', {hour12: false})}`);
+  updateText($('#updated'), `最后更新 ${stamp(snapshot.generated_at)}（北京时间）`);
+  const start = snapshot.period === 'all' ? '开始监控' : stamp(snapshot.range_start);
+  updateText($('#rangeText'), `${start} → ${stamp(snapshot.range_end)}`);
+  updateText($('#rangeRule'), rangeRule(snapshot.period));
 }
 
 const sumFields = ['live_estimate', 'total_tokens', 'input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens', 'api_cost', 'vercel_cost', 'credits'];
@@ -270,7 +277,8 @@ function sessionCard(group) {
     </div>
     <details class="child-records" data-node-key="records:${esc(key)}">
       <summary data-record-summary>展开${group.records.length}条原始记录（内部工具调用已聚拢）</summary>
-      <div class="table-wrap"><table><thead><tr><th>类型</th><th>ID</th><th>模型</th><th>推理</th><th>总Token</th><th>输入</th><th>输出</th><th>最后事件</th><th>操作</th></tr></thead><tbody>${recordRows(group.records)}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>类型</th><th>ID</th><th>模型</th><th>推理</th><th>总Token</th><th>输入</th><th>输出</th><th>最后事件</th><th>操作</th></tr></thead><tbody></tbody></table></div>
+      <div class="record-pagination"><span data-record-count></span><button type="button" class="secondary" data-more-records>再显示100条</button></div>
     </details>
   </article>`;
 }
@@ -398,30 +406,40 @@ function updateRecordRow(row, record) {
 }
 
 function patchRecordRows(article, group) {
+  const details = article.querySelector('.child-records');
+  if (!details?.open) return;
+  const limit = Number(details.dataset.recordLimit || 100);
+  const records = group.records.slice(0, limit);
+  updateText(details.querySelector('[data-record-count]'), `已显示${records.length}/${group.records.length}条`);
+  details.querySelector('[data-more-records]').hidden = records.length >= group.records.length;
   const body = article.querySelector('tbody');
   if (!body) return;
   const existing = new Map([...body.querySelectorAll('[data-record-key]')].map(row => [row.dataset.recordKey, row]));
-  const desired = new Set(group.records.map(record => domKey(record.host_id, record.conversation_id)));
+  const desired = new Set(records.map(record => domKey(record.host_id, record.conversation_id)));
   for (const [key, row] of existing) {
     if (!desired.has(key) && !selectionTouches(row)) {
       row.remove();
       existing.delete(key);
     }
   }
-  for (const record of [...group.records].reverse()) {
+  for (const record of [...records].reverse()) {
     const key = domKey(record.host_id, record.conversation_id);
     if (!existing.has(key)) {
       body.insertAdjacentHTML('afterbegin', recordRow(record));
       existing.set(key, body.firstElementChild);
     }
   }
-  for (const record of group.records) updateRecordRow(existing.get(domKey(record.host_id, record.conversation_id)), record);
+  for (const record of records) updateRecordRow(existing.get(domKey(record.host_id, record.conversation_id)), record);
 }
 
 function patchGroups(view) {
+  const nodes = (selector, key) => new Map([...document.querySelectorAll(selector)].map(node => [node.dataset[key], node]));
+  const devices = nodes('[data-device-key]', 'deviceKey');
+  const projectNodes = nodes('[data-project-key]', 'projectKey');
+  const sessionNodes = nodes('[data-session-key]', 'sessionKey');
   for (const host of view.hosts) {
     const hostGroups = view.groups.filter(group => group.host_id === host.host_id);
-    const element = [...document.querySelectorAll('[data-device-key]')].find(node => node.dataset.deviceKey === domKey(host.host_id));
+    const element = devices.get(domKey(host.host_id));
     if (!element) continue;
     const online = element.querySelector('[data-device-online]');
     if (online) online.className = `pill ${host.online ? 'online' : 'offline'}`;
@@ -435,13 +453,13 @@ function patchGroups(view) {
     projects.get(key).push(group);
   }
   for (const [key, projectGroups] of projects) {
-    const element = [...document.querySelectorAll('[data-project-key]')].find(node => node.dataset.projectKey === key);
+    const element = projectNodes.get(key);
     if (!element) continue;
     const stats = projectStats(projectGroups[0].host_id, projectGroups[0].project, projectGroups);
     for (const [field, value] of Object.entries(stats)) updateText(element.querySelector(`[data-project-field="${field}"]`), value);
   }
   for (const group of view.groups) {
-    const article = [...document.querySelectorAll('[data-session-key]')].find(node => node.dataset.sessionKey === domKey(group.host_id, group.root_id));
+    const article = sessionNodes.get(domKey(group.host_id, group.root_id));
     if (!article) continue;
     updateText(article.querySelector('[data-session-name]'), group.name);
     updateStatus(article.querySelector('[data-session-status]'), group.status);
@@ -527,44 +545,122 @@ function purchaseDialog() {
   $('#dialog').showModal();
 }
 
-async function loadPeriod(forceStructure = false) {
-  let query = `period=${encodeURIComponent($('#period').value)}`;
-  const from = $('#from').value;
-  const to = $('#to').value;
-  if (from) {
-    query = `from=${encodeURIComponent(new Date(from).toISOString())}`;
-    if (to) query += `&to=${encodeURIComponent(new Date(to).toISOString())}`;
-  }
-  const response = await fetch(`/api/snapshot?${query}`);
-  if (response.ok) render(await response.json(), forceStructure);
+function rangeRule(period) {
+  return ({today: '今天：北京时间00:00起，统计到现在', '24h': '最近24小时：从现在向前滚动24小时', week: '本周：北京时间周一00:00起', month: '本月：北京时间1日00:00起', all: '全部：开始监控以来的已采集用量', custom: '自定义：含开始时间，不含结束时间；均为北京时间'})[period] || '';
 }
 
-let poll;
-function liveRender(event) {
-  if ($('#period').value === 'today') render(JSON.parse(event.data));
-  else loadPeriod();
+function rangeQuery(period, from = '', to = '') {
+  const query = new URLSearchParams({period});
+  if (period === 'custom') {
+    // datetime-local has no zone. Interpret it explicitly as Beijing time,
+    // independent of the phone, browser, or VPS timezone.
+    const start = new Date(`${from}+08:00`);
+    const end = to ? new Date(`${to}+08:00`) : new Date();
+    if (!from || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) throw new Error('请选择有效的开始和结束时间');
+    if (start >= end) throw new Error('结束时间必须晚于开始时间');
+    query.set('from', start.toISOString());
+    if (to) query.set('to', end.toISOString());
+  }
+  return query.toString();
+}
+
+// At most one refresh is in flight. Manual changes cancel it, and the sequence
+// check rejects a late response even when the network ignores cancellation.
+function createRangeLoader(fetcher, onData, onStatus) {
+  let sequence = 0;
+  let current;
+  return async (query, replace = false) => {
+    if (current && !replace) return;
+    current?.abort();
+    const controller = new AbortController();
+    current = controller;
+    const ticket = ++sequence;
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    onStatus('loading', replace);
+    try {
+      const response = await fetcher(`/api/snapshot?${query}`, {signal: controller.signal, cache: 'no-store'});
+      if (response.status === 401) throw new Error('登录已过期，请重新登录');
+      if (!response.ok) throw new Error(response.status === 400 ? await response.text() : '数据暂时加载失败，请重试');
+      const data = await response.json();
+      if (ticket !== sequence || controller.signal.aborted) return;
+      if (data.error) throw new Error('数据暂时不可用，请重试');
+      onData(data);
+      onStatus('ready', replace);
+    } catch (error) {
+      if (ticket === sequence) onStatus('error', replace, error.name === 'AbortError' ? '加载超时，请点击重试' : error.message);
+    } finally {
+      clearTimeout(timeout);
+      if (ticket === sequence) current = null;
+    }
+  };
+}
+
+let appliedQuery = 'period=today';
+let refreshTimer;
+let rangeLoader;
+let eventStream;
+function loadPeriod(manual = false) {
+  if (manual) clearTimeout(refreshTimer);
+  if (manual) refreshTimer = undefined;
+  return rangeLoader(appliedQuery, manual === true);
+}
+function scheduleRefresh() {
+  if (refreshTimer || document.hidden) return;
+  refreshTimer = setTimeout(() => { refreshTimer = undefined; loadPeriod(); }, 1000);
+}
+function choosePeriod() {
+  const period = $('#period').value;
+  $('#customRange').hidden = period !== 'custom';
+  if (period === 'custom') {
+    if (!$('#from').value) {
+      const local = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 16);
+      $('#from').value = `${local.slice(0, 10)}T00:00`;
+      $('#to').value = local;
+    }
+    updateText($('#loadStatus'), '请选择时间后点“应用时间”；下方仍显示上次结果');
+    return;
+  }
+  appliedQuery = rangeQuery(period);
+  loadPeriod(true);
+}
+function applyRange() {
+  try {
+    appliedQuery = rangeQuery($('#period').value, $('#from').value, $('#to').value);
+    loadPeriod(true);
+  } catch (error) {
+    $('#loadStatus').textContent = error.message;
+    $('#loadStatus').dataset.state = 'error';
+  }
 }
 function connect() {
-  const events = new EventSource('/events');
+  eventStream?.close();
+  const events = new EventSource('/events?notify=1');
+  eventStream = events;
   events.onopen = () => {
-    $('#sse').textContent = 'SSE 已连接';
+    $('#sse').textContent = '实时已连接';
     $('#sse').className = 'pill online';
-    clearInterval(poll);
   };
-  events.addEventListener('snapshot', liveRender);
-  events.addEventListener('update', liveRender);
+  events.addEventListener('ready', scheduleRefresh);
+  events.addEventListener('changed', scheduleRefresh);
   events.onerror = () => {
-    $('#sse').textContent = 'REST 降级轮询';
+    $('#sse').textContent = '重连中';
     $('#sse').className = 'pill offline';
-    events.close();
-    poll = setInterval(loadPeriod, 2000);
-    setTimeout(connect, 10000);
+    // EventSource reconnects itself. One slow fallback timer below covers both
+    // disconnected streams and changes to online/active status without events.
   };
 }
 
 function startDashboard() {
-  $('#applyRange').onclick = () => loadPeriod(true);
-  $('#period').onchange = () => loadPeriod(true);
+  rangeLoader = createRangeLoader(fetch, render, (status, manual, message) => {
+    if (status === 'loading' && !manual && state.generated_at) return;
+    $('#loadStatus').dataset.state = status;
+    $('#loadStatus').textContent = status === 'loading' ? '正在加载所选范围…' : status === 'error' ? message : '已更新';
+    $('#retryRange').hidden = status !== 'error';
+    $('#cards').setAttribute('aria-busy', String(status === 'loading'));
+  });
+  $('#applyRange').onclick = applyRange;
+  $('#period').onchange = choosePeriod;
+  $('#retryRange').onclick = () => loadPeriod(true);
   $('#filter').oninput = () => renderGroups(true);
   $('#addWindows').onclick = () => enroll('windows');
   $('#addLinux').onclick = () => enroll('linux');
@@ -581,13 +677,32 @@ function startDashboard() {
       event.stopPropagation();
       detail(button.dataset.detail);
     }
+    const more = event.target.closest('[data-more-records]');
+    if (more) {
+      const details = more.closest('.child-records');
+      details.dataset.recordLimit = Number(details.dataset.recordLimit || 100) + 100;
+      const article = details.closest('[data-session-key]');
+      const group = groupedSessions(state.sessions || []).find(group => domKey(group.host_id, group.root_id) === article.dataset.sessionKey);
+      if (group) patchRecordRows(article, group);
+    }
   });
+  $('#sessionGroups').addEventListener('toggle', event => {
+    if (!event.target.matches('.child-records') || !event.target.open) return;
+    const article = event.target.closest('[data-session-key]');
+    const group = groupedSessions(state.sessions || []).find(group => domKey(group.host_id, group.root_id) === article.dataset.sessionKey);
+    if (group) patchRecordRows(article, group);
+  }, true);
   document.addEventListener('selectionchange', () => {
     const selection = document.getSelection?.();
     if (structurePending && (!selection || selection.isCollapsed)) renderGroups(true);
   });
+  loadPeriod(true);
   connect();
+  window.addEventListener('pagehide', () => eventStream?.close());
+  window.addEventListener('pageshow', event => { if (event.persisted) { connect(); loadPeriod(true); } });
+  setInterval(() => { if (!document.hidden) loadPeriod(); }, 15000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) loadPeriod(); });
 }
 
 if (typeof document !== 'undefined') startDashboard();
-if (typeof module !== 'undefined' && module.exports) module.exports = {token, tokenM, groupedSessions, displayProjectName, dashboardCards, sessionMetricValues, viewStructure, updateText};
+if (typeof module !== 'undefined' && module.exports) module.exports = {token, tokenM, groupedSessions, displayProjectName, dashboardCards, sessionMetricValues, viewStructure, updateText, rangeQuery, rangeRule, createRangeLoader};

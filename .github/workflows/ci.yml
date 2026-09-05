@@ -25,7 +25,9 @@ jobs:
       - name: Go vet
         run: go vet ./...
       - name: Frontend tests
-        run: node tests/frontend_test.js
+        run: |
+          node tests/frontend_test.js
+          node tests/range_test.js
       - name: Cross-platform builds
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /tmp/codex-meter-linux-amd64 .

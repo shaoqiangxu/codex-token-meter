@@ -1,10 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -16,39 +16,69 @@ type sseMessage struct {
 type eventHub struct {
 	mu      sync.Mutex
 	seq     int64
-	history []sseMessage
-	clients map[chan sseMessage]struct{}
+	clients map[chan sseMessage]bool
 	dirty   bool
 }
 
-func newHub() *eventHub   { return &eventHub{clients: map[chan sseMessage]struct{}{}} }
+func newHub() *eventHub   { return &eventHub{clients: map[chan sseMessage]bool{}} }
 func (h *eventHub) mark() { h.mu.Lock(); h.dirty = true; h.mu.Unlock() }
-func (h *eventHub) run(snapshot func() any) {
-	t := time.NewTicker(250 * time.Millisecond)
+func (h *eventHub) run(ctx context.Context, snapshot func() any) {
+	t := time.NewTicker(time.Second)
 	defer t.Stop()
-	for range t.C {
-		h.mu.Lock()
-		if !h.dirty {
-			h.mu.Unlock()
-			continue
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			h.publish(snapshot)
 		}
-		h.dirty = false
-		h.seq++
-		b, _ := json.Marshal(snapshot())
-		m := sseMessage{h.seq, b}
-		h.history = append(h.history, m)
-		if len(h.history) > 512 {
-			h.history = h.history[len(h.history)-512:]
+	}
+}
+
+func (h *eventHub) publish(snapshot func() any) {
+	h.mu.Lock()
+	if !h.dirty {
+		h.mu.Unlock()
+		return
+	}
+	h.dirty = false
+	h.seq++
+	seq := h.seq
+	clients := make(map[chan sseMessage]bool, len(h.clients))
+	full := false
+	for c, notify := range h.clients {
+		clients[c] = notify
+		full = full || !notify
+	}
+	h.mu.Unlock()
+	// Ingest also marks this hub. Do not hold its lock while querying SQLite.
+	// With no viewers or notification-only viewers, no snapshot is needed.
+	var b []byte
+	if full {
+		b, _ = json.Marshal(snapshot())
+	}
+	for c, notify := range clients {
+		data := b
+		if notify {
+			data = []byte(`{}`)
 		}
-		for c := range h.clients {
+		m := sseMessage{seq, data}
+		select {
+		case c <- m:
+		default:
+			// Only the newest snapshot is useful to a slow reader.
+			select {
+			case <-c:
+			default:
+			}
 			select {
 			case c <- m:
 			default:
 			}
 		}
-		h.mu.Unlock()
 	}
 }
+
 func (h *eventHub) serve(w http.ResponseWriter, r *http.Request, snapshot func() any) {
 	f, ok := w.(http.Flusher)
 	if !ok {
@@ -58,24 +88,21 @@ func (h *eventHub) serve(w http.ResponseWriter, r *http.Request, snapshot func()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
-	b, _ := json.Marshal(snapshot())
-	fmt.Fprintf(w, "event: snapshot\ndata: %s\n\n", b)
-	c := make(chan sseMessage, 16)
-	last, _ := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64)
+	notify := r.URL.Query().Get("notify") == "1"
+	c := make(chan sseMessage, 1)
 	h.mu.Lock()
-	var replay []sseMessage
-	for _, m := range h.history {
-		if m.ID > last {
-			replay = append(replay, m)
-		}
-	}
-	h.clients[c] = struct{}{}
+	h.clients[c] = notify
 	h.mu.Unlock()
-	for _, m := range replay {
-		fmt.Fprintf(w, "id: %d\nevent: update\ndata: %s\n\n", m.ID, m.Data)
-	}
-	f.Flush()
 	defer func() { h.mu.Lock(); delete(h.clients, c); h.mu.Unlock() }()
+	if notify {
+		fmt.Fprint(w, "event: ready\ndata: {}\n\n")
+	} else {
+		b, _ := json.Marshal(snapshot())
+		fmt.Fprintf(w, "event: snapshot\ndata: %s\n\n", b)
+	}
+	// Connections start fresh; replaying old full snapshots would roll the UI
+	// backwards and trigger hundreds of concurrent range requests.
+	f.Flush()
 	ping := time.NewTicker(15 * time.Second)
 	defer ping.Stop()
 	for {
@@ -83,10 +110,18 @@ func (h *eventHub) serve(w http.ResponseWriter, r *http.Request, snapshot func()
 		case <-r.Context().Done():
 			return
 		case m := <-c:
-			fmt.Fprintf(w, "id: %d\nevent: update\ndata: %s\n\n", m.ID, m.Data)
+			event := "update"
+			if notify {
+				event = "changed"
+			}
+			if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", m.ID, event, m.Data); err != nil {
+				return
+			}
 			f.Flush()
 		case <-ping.C:
-			fmt.Fprint(w, ": ping\n\n")
+			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
+				return
+			}
 			f.Flush()
 		}
 	}

@@ -23,8 +23,50 @@ type costEvent struct {
 	counts             TokenCounts
 }
 
+type priceRule struct {
+	provider, profile, model      string
+	from, to                      string
+	input, cached, output, im, om float64
+	write                         sql.NullFloat64
+	threshold                     sql.NullInt64
+	currency, verified            string
+	stale                         int
+}
+
+// Load the versioned price table once, while retaining per-request pricing.
+func loadPriceRules(db *sql.DB) ([]priceRule, error) {
+	rows, err := db.Query(`SELECT provider,plan_profile,model,effective_from,COALESCE(effective_to,''),input_rate,cached_input_rate,cache_write_rate,output_rate,long_input_multiplier,long_output_multiplier,long_context_threshold,currency,verified_at,stale FROM prices ORDER BY effective_from DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var rules []priceRule
+	for rows.Next() {
+		var r priceRule
+		if err := rows.Scan(&r.provider, &r.profile, &r.model, &r.from, &r.to, &r.input, &r.cached, &r.write, &r.output, &r.im, &r.om, &r.threshold, &r.currency, &r.verified, &r.stale); err != nil {
+			return nil, err
+		}
+		rules = append(rules, r)
+	}
+	return rules, rows.Err()
+}
+
+func costFromRules(rules []priceRule, provider, profile, model string, c TokenCounts, at time.Time) (CostBreakdown, error) {
+	stamp := at.UTC().Format(time.RFC3339)
+	for _, r := range rules {
+		if r.provider == provider && r.profile == profile && r.model == model && r.from <= stamp && (r.to == "" || r.to > stamp) {
+			return calculateCost(r, provider, profile, c), nil
+		}
+	}
+	return CostBreakdown{}, sql.ErrNoRows
+}
+
 func rangeCosts(db *sql.DB, since, until time.Time) (providerCosts, map[string]providerCosts) {
-	rows, err := db.Query(`SELECT host_id,conversation_id,timestamp,input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,total_tokens,cache_write_visible FROM usage_events WHERE timestamp>=? AND timestamp<? ORDER BY timestamp`, since.Format(time.RFC3339Nano), until.Format(time.RFC3339Nano))
+	rules, err := loadPriceRules(db)
+	if err != nil {
+		return providerCosts{}, map[string]providerCosts{}
+	}
+	rows, err := db.Query(`SELECT host_id,conversation_id,timestamp,input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,total_tokens,cache_write_visible FROM usage_events WHERE timestamp>=? AND timestamp<? ORDER BY timestamp`, rangeBound(since), rangeBound(until))
 	if err != nil {
 		return providerCosts{}, map[string]providerCosts{}
 	}
@@ -42,9 +84,9 @@ func rangeCosts(db *sql.DB, since, until time.Time) (providerCosts, map[string]p
 	total := providerCosts{}
 	bySession := map[string]providerCosts{}
 	for _, e := range events {
-		api, _ := costFor(db, "openai", "API", "gpt-5.6-sol", e.counts, e.at)
-		vercel, _ := costFor(db, "vercel", "AI Gateway public", "openai/gpt-5.6-sol", e.counts, e.at)
-		credits, _ := costFor(db, "codex", "Plus/Pro Current", "gpt-5.6-sol", e.counts, e.at)
+		api, _ := costFromRules(rules, "openai", "API", "gpt-5.6-sol", e.counts, e.at)
+		vercel, _ := costFromRules(rules, "vercel", "AI Gateway public", "openai/gpt-5.6-sol", e.counts, e.at)
+		credits, _ := costFromRules(rules, "codex", "Plus/Pro Current", "gpt-5.6-sol", e.counts, e.at)
 		addCost(&total.API, api)
 		addCost(&total.Vercel, vercel)
 		addCost(&total.Credits, credits)
@@ -85,17 +127,15 @@ func addCost(dst *CostBreakdown, src CostBreakdown) {
 }
 
 func costFor(db *sql.DB, provider, profile, model string, c TokenCounts, at time.Time) (CostBreakdown, error) {
-	var r struct {
-		input, cached, output, im, om float64
-		write                         sql.NullFloat64
-		threshold                     sql.NullInt64
-		currency, verified            string
-		stale                         int
-	}
+	var r priceRule
 	err := db.QueryRow(`SELECT input_rate,cached_input_rate,cache_write_rate,output_rate,long_input_multiplier,long_output_multiplier,long_context_threshold,currency,verified_at,stale FROM prices WHERE provider=? AND plan_profile=? AND model=? AND effective_from<=? AND (effective_to IS NULL OR effective_to>?) ORDER BY effective_from DESC LIMIT 1`, provider, profile, model, at.Format(time.RFC3339), at.Format(time.RFC3339)).Scan(&r.input, &r.cached, &r.write, &r.output, &r.im, &r.om, &r.threshold, &r.currency, &r.verified, &r.stale)
 	if err != nil {
 		return CostBreakdown{}, err
 	}
+	return calculateCost(r, provider, profile, c), nil
+}
+
+func calculateCost(r priceRule, provider, profile string, c TokenCounts) CostBreakdown {
 	fresh := c.InputTokens - c.CachedInputTokens - c.CacheWriteInputTokens
 	if fresh < 0 {
 		fresh = 0
@@ -122,5 +162,5 @@ func costFor(db *sql.DB, provider, profile, model string, c TokenCounts, at time
 	if r.stale != 0 {
 		q = "STALE"
 	}
-	return CostBreakdown{provider, profile, base, upper, r.currency, q, r.verified}, nil
+	return CostBreakdown{provider, profile, base, upper, r.currency, q, r.verified}
 }
