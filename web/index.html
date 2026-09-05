@@ -1,19 +1,29 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex Token Meter</title><link rel="stylesheet" href="/style.css?v=6"><link rel="stylesheet" href="/dashboard.css?v=5"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#09111f"><title>Codex Token Meter</title><link rel="stylesheet" href="/style.css?v=6"><link rel="stylesheet" href="/dashboard.css?v=7"></head>
 <body>
 <header><div><span class="brand">Codex Token Meter</span><span class="sub">实时、可核验的本地 Codex 用量</span></div><div class="header-actions"><span id="sse" class="pill offline">SSE 连接中</span><a href="/logout">退出</a></div></header>
 <main>
-  <section id="cards" class="cards"></section>
-  <section class="toolbar">
-    <select id="period"><option value="today">今天</option><option value="24h">最近24小时</option><option value="week">本周</option><option value="month">本月</option><option value="all">自定义时间（全部）</option></select>
-    <input id="from" type="datetime-local" title="自定义开始时间"><input id="to" type="datetime-local" title="自定义结束时间"><button id="applyRange" class="secondary">应用时间</button>
-    <input id="filter" placeholder="筛选主机 / 项目 / 模型 / 会话">
-    <button id="addWindows">添加 Windows 电脑</button><button id="addLinux" class="secondary">添加 Linux VPS</button>
-    <button id="addPurchase" class="secondary">录入 Credits 购买批次</button>
-    <a href="/api/export?format=csv">CSV</a><a href="/api/export?format=json">JSON</a>
+  <section class="range-toolbar" aria-label="统计时间范围">
+    <div class="range-controls">
+      <label class="period-field" for="period"><span>统计范围</span><select id="period"><option value="today">今天</option><option value="24h">最近24小时</option><option value="week">本周</option><option value="month">本月</option><option value="all">全部时间</option><option value="custom">自定义时间</option></select></label>
+      <span class="timezone">北京时间 UTC+8</span>
+      <span id="loadStatus" role="status" aria-live="polite">正在加载…</span><button id="retryRange" class="secondary" hidden>重试</button>
+    </div>
+    <div id="customRange" class="custom-range" hidden>
+      <label for="from">开始时间（北京时间）<input id="from" type="datetime-local"></label>
+      <label for="to">结束时间（留空为现在）<input id="to" type="datetime-local"></label>
+      <button id="applyRange" class="secondary">应用时间</button>
+    </div>
+    <div id="rangeText" class="range-text">正在读取时间范围…</div>
+    <div id="rangeRule" class="range-rule">今天：北京时间00:00起，统计到现在</div>
   </section>
-  <section class="panel"><div class="panel-title"><div><h2>按设备与项目聚拢的会话</h2><div class="panel-explain">这里显示的是归属于各项目的 Codex 任务用量；监控服务只读取本地数字，不调用模型 API，也不会产生 Token。</div></div><span id="updated">等待数据</span></div><div id="sessionGroups" class="session-groups"></div></section>
+  <section id="cards" class="cards" aria-label="用量与价格" aria-busy="true"></section>
+  <details class="management"><summary>设备管理与导出</summary><div class="management-actions">
+    <button id="addWindows">添加 Windows 电脑</button><button id="addLinux" class="secondary">添加 Linux VPS</button><button id="addPurchase" class="secondary">录入 Credits 购买批次</button>
+    <a href="/api/export?format=csv">导出全部 CSV</a><a href="/api/export?format=json">导出全部 JSON</a>
+  </div></details>
+  <section class="panel"><div class="panel-title"><div><h2>按设备与项目聚拢的会话</h2><div class="panel-explain">这里只统计各项目的 Codex 任务用量。监控服务不调用模型 API，也不会产生 Token。</div></div><span id="updated">等待数据</span></div><div class="session-filter"><input id="filter" type="search" aria-label="筛选主机、项目、模型或会话" placeholder="筛选主机 / 项目 / 模型 / 会话"></div><div id="sessionGroups" class="session-groups"></div></section>
 </main>
 <dialog id="dialog"><button class="close" id="close">×</button><h2 id="dialogTitle">详情</h2><div id="dialogBody"></div></dialog>
-<script src="/app.js?v=5"></script></body></html>
+<script src="/app.js?v=7"></script></body></html>

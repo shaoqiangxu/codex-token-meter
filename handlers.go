@@ -178,46 +178,17 @@ type sessionView struct {
 }
 
 func (s *server) snapshot() any {
-	now := time.Now().UTC()
-	return s.snapshotSince(time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC))
+	return s.snapshotPeriod("today")
 }
 func (s *server) snapshotPeriod(period string) any {
-	now := time.Now().UTC()
-	var since time.Time
-	switch period {
-	case "24h":
-		since = now.Add(-24 * time.Hour)
-	case "week":
-		d := int(now.Weekday())
-		if d == 0 {
-			d = 7
-		}
-		since = time.Date(now.Year(), now.Month(), now.Day()-d+1, 0, 0, 0, 0, time.UTC)
-	case "month":
-		since = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	case "all":
-		since = time.Unix(0, 0).UTC()
-	default:
-		since = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	r, err := resolveDashboardRange(map[string][]string{"period": {period}}, time.Now())
+	if err != nil {
+		return map[string]any{"error": err.Error()}
 	}
-	return s.snapshotSince(since)
-}
-func (s *server) snapshotForRequest(r *http.Request) any {
-	if raw := r.URL.Query().Get("from"); raw != "" {
-		if from, err := time.Parse(time.RFC3339, raw); err == nil {
-			until := time.Now().UTC().AddDate(1, 0, 0)
-			if end := r.URL.Query().Get("to"); end != "" {
-				if parsed, e := time.Parse(time.RFC3339, end); e == nil {
-					until = parsed
-				}
-			}
-			return s.snapshotBetween(from, until)
-		}
-	}
-	return s.snapshotPeriod(r.URL.Query().Get("period"))
+	return s.snapshotForRange(r)
 }
 func (s *server) snapshotSince(since time.Time) any {
-	return s.snapshotBetween(since, time.Now().UTC().AddDate(100, 0, 0))
+	return s.snapshotBetween(since, time.Now().UTC())
 }
 func (s *server) snapshotBetween(since, until time.Time) any {
 	rows, err := s.db.Query(`WITH u AS (SELECT host_id,conversation_id,SUM(input_tokens) input_tokens,SUM(cached_input_tokens) cached_input_tokens,SUM(cache_write_input_tokens) cache_write_input_tokens,SUM(output_tokens) output_tokens,SUM(reasoning_output_tokens) reasoning_output_tokens,SUM(total_tokens) total_tokens FROM usage_events WHERE timestamp>=? AND timestamp<? GROUP BY host_id,conversation_id)
@@ -230,7 +201,7 @@ func (s *server) snapshotBetween(since, until time.Time) any {
 		LEFT JOIN u ON u.host_id=s.host_id AND u.conversation_id=s.conversation_id
 		LEFT JOIN session_metadata ownm ON ownm.host_id=s.host_id AND ownm.conversation_id=s.conversation_id
 		LEFT JOIN session_metadata parentm ON parentm.host_id=s.host_id AND parentm.conversation_id=s.parent_conversation_id
-		WHERE u.total_tokens IS NOT NULL OR s.live_estimate>0 ORDER BY s.last_event_at DESC LIMIT 500`, since.Format(time.RFC3339Nano), until.Format(time.RFC3339Nano))
+		WHERE u.total_tokens IS NOT NULL OR s.live_estimate>0 ORDER BY s.last_event_at DESC`, rangeBound(since), rangeBound(until))
 	if err != nil {
 		return map[string]any{"error": "database unavailable"}
 	}
@@ -301,7 +272,7 @@ func (s *server) snapshotBetween(since, until time.Time) any {
 func (s *server) tokenTotalsBetween(since, until time.Time) TokenCounts {
 	result := TokenCounts{CacheWriteVisible: true}
 	var visible int
-	err := s.db.QueryRow(`SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(cached_input_tokens),0),COALESCE(SUM(cache_write_input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(reasoning_output_tokens),0),COALESCE(SUM(total_tokens),0),COALESCE(MIN(cache_write_visible),1) FROM usage_events WHERE timestamp>=? AND timestamp<?`, since.Format(time.RFC3339Nano), until.Format(time.RFC3339Nano)).Scan(&result.InputTokens, &result.CachedInputTokens, &result.CacheWriteInputTokens, &result.OutputTokens, &result.ReasoningOutputTokens, &result.TotalTokens, &visible)
+	err := s.db.QueryRow(`SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(cached_input_tokens),0),COALESCE(SUM(cache_write_input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(reasoning_output_tokens),0),COALESCE(SUM(total_tokens),0),COALESCE(MIN(cache_write_visible),1) FROM usage_events WHERE timestamp>=? AND timestamp<?`, rangeBound(since), rangeBound(until)).Scan(&result.InputTokens, &result.CachedInputTokens, &result.CacheWriteInputTokens, &result.OutputTokens, &result.ReasoningOutputTokens, &result.TotalTokens, &visible)
 	if err == nil {
 		result.CacheWriteVisible = visible != 0
 	}
@@ -331,7 +302,7 @@ func (s *server) projectTotalsBetween(since, until time.Time, costs map[string]p
 		u.input_tokens,u.output_tokens,u.total_tokens
 		FROM u JOIN sessions s ON s.host_id=u.host_id AND s.conversation_id=u.conversation_id
 		LEFT JOIN session_metadata ownm ON ownm.host_id=s.host_id AND ownm.conversation_id=s.conversation_id
-		LEFT JOIN session_metadata parentm ON parentm.host_id=s.host_id AND parentm.conversation_id=s.parent_conversation_id`, since.Format(time.RFC3339Nano), until.Format(time.RFC3339Nano))
+		LEFT JOIN session_metadata parentm ON parentm.host_id=s.host_id AND parentm.conversation_id=s.parent_conversation_id`, rangeBound(since), rangeBound(until))
 	if err != nil {
 		return nil
 	}
