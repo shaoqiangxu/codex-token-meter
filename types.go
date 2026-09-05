@@ -1,6 +1,9 @@
 package main
 
-import "time"
+import (
+	"database/sql"
+	"time"
+)
 
 const parserVersion = "codex-jsonl-v2"
 
@@ -35,6 +38,7 @@ type UsageEvent struct {
 	DataQuality          string      `json:"data_quality"`
 	ParserVersion        string      `json:"parser_version"`
 	LiveEstimate         int64       `json:"live_estimate,omitempty"`
+	RunState             string      `json:"runtime_state,omitempty"`
 }
 
 // SessionMetadata contains display-only identifiers. The agent intentionally
@@ -66,6 +70,8 @@ type AgentConfig struct {
 	metadataSent        map[string]string
 	lastMetadataScan    time.Time
 	health              *agentHealth
+	localDB             *sql.DB
+	scheduler           *scanScheduler
 }
 
 type fileStamp struct {

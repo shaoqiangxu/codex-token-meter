@@ -1,4 +1,5 @@
 const $ = selector => document.querySelector(selector);
+const realtime = typeof module !== 'undefined' && module.exports ? require('./realtime.js') : MeterRealtime;
 let state = {sessions: [], hosts: [], totals: {}, project_totals: [], exchange_rate: {}};
 let renderedStructure = '';
 let structurePending = false;
@@ -11,11 +12,7 @@ function trimNumber(value, digits) {
 
 function token(value) {
   const number = Number(value || 0);
-  const absolute = Math.abs(number);
-  if (absolute >= 1000000) {
-    return `${(number / 1000000).toFixed(4)}M`;
-  }
-  return String(Math.round(number));
+  return Math.round(number).toLocaleString('en-US', {maximumFractionDigits: 0});
 }
 
 function tokenM(value) {
@@ -95,25 +92,19 @@ function updateText(element, value) {
 function dashboardCards(snapshot) {
   const totals = snapshot.totals || {};
   const fx = snapshot.exchange_rate || {};
-  const activeCutoff = Date.now() - 5 * 60 * 1000;
-  const pending = (snapshot.sessions || []).some(item => {
-    const quality = item.data_quality || item.status;
-    const lastEvent = new Date(item.last_event_at || 0).getTime();
-    return (quality === 'LOWER_BOUND' || quality === 'ESTIMATED_LIVE') && lastEvent >= activeCutoff;
-  });
+  const runtime = realtime.runtimeStatus(snapshot);
   const fxState = fx.stale ? '汇率已过期' : '每6小时同步';
-  const live = Number(totals.live_estimate || 0);
-  const generatingValue = live > 0 ? tokenM(live) : pending ? '日志不可估算' : '0.0000M';
-  const generatingNote = live > 0 ? '本地文本增量估算 · 完成后校准' : pending ? '无文本增量；完成后记入精确值' : '当前没有待结算输出';
+  const generatingValue = ({ESTIMATED_LIVE: `${token(runtime.live)} Token（估算）`, RUNNING: '执行中，等待usage', IDLE: '空闲', UNKNOWN: '状态未知'})[runtime.state];
+  const generatingNote = `${runtime.state} · ${runtime.note}`;
   const writeVisible = totals.cache_write_visible !== false;
-  const writeValue = writeVisible ? tokenM(totals.cache_write_input_tokens) : '不可见';
+  const writeValue = writeVisible ? token(totals.cache_write_input_tokens) : '不可见';
   const writeNote = writeVisible && Number(totals.cache_write_input_tokens || 0) === 0 ? '日志明确上报写入为0' : writeVisible ? '日志已提供写入字段' : '当前日志未提供写入字段';
   return [
-    {key: 'exact', label: `${periodLabels[snapshot.period] || '今日'}精确 Token`, value: tokenM(totals.total_tokens), note: '所选时段内已结算 · EXACT'},
+    {key: 'exact', label: `${periodLabels[snapshot.period] || '今日'}精确 Token`, value: token(totals.total_tokens), note: `${tokenM(totals.total_tokens)} · EXACT · 最近入账 ${stamp(snapshot.last_ledger_at)}`},
     {key: 'generating', label: '当前生成中临时 Token', value: generatingValue, note: generatingNote},
-    {key: 'io', label: '总输入 / 输出', value: `${tokenM(totals.input_tokens)}/${tokenM(totals.output_tokens)}`, parts: [{label: '输入', value: tokenM(totals.input_tokens)}, {label: '输出', value: tokenM(totals.output_tokens)}], note: `推理输出${tokenM(totals.reasoning_output_tokens)}`},
-    {key: 'cache', label: '缓存读取 / 写入', value: `${tokenM(totals.cached_input_tokens)}/${writeValue}`, parts: [{label: '读取', value: tokenM(totals.cached_input_tokens)}, {label: '写入', value: writeValue}], note: `命中率${trimNumber(totals.cache_hit_rate || 0, 1)}% · ${writeNote}`},
-    {key: 'active', label: '当前活跃会话 / 在线设备', value: `${totals.active_sessions || 0}/${totals.online_hosts || 0}`, note: '近5分钟活跃 / 近15秒在线 · 不随时间筛选'},
+    {key: 'io', label: '总输入 / 输出', value: `${token(totals.input_tokens)}/${token(totals.output_tokens)}`, parts: [{label: '输入', value: token(totals.input_tokens)}, {label: '输出', value: token(totals.output_tokens)}], note: `${tokenM(totals.input_tokens)}/${tokenM(totals.output_tokens)} · 推理输出${token(totals.reasoning_output_tokens)}`},
+    {key: 'cache', label: '缓存读取 / 写入', value: `${token(totals.cached_input_tokens)}/${writeValue}`, parts: [{label: '读取', value: token(totals.cached_input_tokens)}, {label: '写入', value: writeValue}], note: `命中率${trimNumber(totals.cache_hit_rate || 0, 1)}% · ${writeNote}`},
+    {key: 'active', label: '活跃会话 / 在线采集器', value: `${totals.active_sessions || 0}/${(snapshot.hosts || []).filter(host => host.connection_state === 'online').length}`, note: '活跃数截至快照（近5分钟）；在线由心跳判断'},
     {key: 'openai', label: 'OpenAI API 等价', value: money(totals.api?.value), note: `${cny(totals.api_cny)} · 官方费率每日同步 · ${stamp(totals.api?.verified_at)}`},
     {key: 'vercel', label: 'Vercel 等价', value: money(totals.vercel?.value), note: `${cny(totals.vercel_cny)} · 模型目录每日同步 · ${stamp(totals.vercel?.verified_at)}`},
     {key: 'credits', label: 'Codex Credits 等价', value: credits(totals.credits?.value), note: totals.credits_purchase_usd ? `购买均价${money(totals.credits_purchase_usd)}/${cny(totals.credits_purchase_cny)}` : '未录入购买批次'},
@@ -217,7 +208,7 @@ function domKey(...parts) {
 
 function statusPill(status) {
   const className = status === 'EXACT' ? 'exact' : status === 'ESTIMATED_LIVE' || status === 'LOWER_BOUND' ? 'estimated' : 'stale';
-  return `<span class="pill ${className}" data-session-status>${esc(status)}</span>`;
+  return `<span class="pill ${className}" data-session-status>${esc(status === 'LOWER_BOUND' ? '用量待确认' : status)}</span>`;
 }
 
 function metric(key, label, value, note = '') {
@@ -244,14 +235,14 @@ function recordRows(records) {
 
 function sessionMetricValues(group) {
   const fx = Number(state.exchange_rate?.rate || 0);
-  const write = group.cache_write_visible ? tokenM(group.cache_write_input_tokens) : '不可见';
+  const write = group.cache_write_visible ? token(group.cache_write_input_tokens) : '不可见';
   const writeNote = group.cache_write_visible && Number(group.cache_write_input_tokens || 0) === 0 ? '日志明确上报0' : group.cache_write_visible ? '' : '日志未提供该字段';
   return {
-    total: {value: tokenM(group.total_tokens), note: `${group.records.length}条记录`},
-    input: {value: tokenM(group.input_tokens), note: ''},
-    cache_read: {value: tokenM(group.cached_input_tokens), note: `${trimNumber(group.cache_hit_rate, 1)}%`},
+    total: {value: token(group.total_tokens), note: `${tokenM(group.total_tokens)} · ${group.records.length}条记录`},
+    input: {value: token(group.input_tokens), note: tokenM(group.input_tokens)},
+    cache_read: {value: token(group.cached_input_tokens), note: `${tokenM(group.cached_input_tokens)} · ${trimNumber(group.cache_hit_rate, 1)}%`},
     cache_write: {value: write, note: writeNote},
-    output: {value: tokenM(group.output_tokens), note: `推理${tokenM(group.reasoning_output_tokens)}`},
+    output: {value: token(group.output_tokens), note: `${tokenM(group.output_tokens)} · 推理${token(group.reasoning_output_tokens)}`},
     openai: {value: money(group.api_cost), note: cny(group.api_cost * fx)},
     vercel: {value: money(group.vercel_cost), note: cny(group.vercel_cost * fx)},
     credits: {value: credits(group.credits), note: ''}
@@ -266,6 +257,7 @@ function sessionCard(group) {
       <span class="session-title" data-session-name>${esc(group.name)}</span>
       <span class="session-id">${esc(shortID(group.root_id))}</span>
       ${statusPill(group.status)}
+      <span class="runtime-label" data-session-runtime>${esc(taskRuntimeLabel(group.host_id,group.root_id))}</span>
       <span data-session-model>${esc(group.model)} · ${esc(group.reasoning_effort)}</span>
       <span class="session-time" data-session-time>${duration(group.started_at)} · ${ago(group.last_event_at)}</span>
     </div>
@@ -315,7 +307,7 @@ function projectStats(hostID, project, projectGroups) {
     totals.credits += Number(group.credits || 0);
     totals.records += group.records.length;
   }
-  const exactTotals = (state.project_totals || []).find(item => item.host_id === hostID && item.project === project);
+  const exactTotals = !$('#filter')?.value.trim() && (state.project_totals || []).find(item => item.host_id === hostID && item.project === project);
   if (exactTotals) {
     totals.total_tokens = Number(exactTotals.total_tokens || 0);
     totals.api_cost = Number(exactTotals.api_cost || 0);
@@ -326,7 +318,7 @@ function projectStats(hostID, project, projectGroups) {
   totals.sessions = exactTotals ? Number(exactTotals.sessions || 0) : projectGroups.length;
   const fx = Number(state.exchange_rate?.rate || 0);
   return {
-    token: `Token ${tokenM(totals.total_tokens)}`,
+    token: `Token ${token(totals.total_tokens)}（${tokenM(totals.total_tokens)}）`,
     openai: `OpenAI ${money(totals.api_cost)}/${cny(totals.api_cost * fx)}`,
     vercel: `Vercel ${money(totals.vercel_cost)}/${cny(totals.vercel_cost * fx)}`,
     credits: credits(totals.credits),
@@ -383,6 +375,7 @@ function groupsHTML(view) {
     const hostKey = domKey(host.host_id);
     return `<details class="device-group" open data-node-key="device:${esc(hostKey)}" data-device-key="${esc(hostKey)}">
       <summary><span class="device-icon">${icon}</span><span class="device-name">${esc(host.alias)}</span><span class="device-kind">${kind}</span><span class="pill ${host.online ? 'online' : 'offline'}" data-device-online>${host.online ? '在线' : '离线'}</span><span class="device-count" data-device-count>${hostGroups.length}个聚合会话 · ${rawCount}条原始记录</span></summary>
+      <div class="device-health" data-device-health></div>
       <div class="project-list">${empty}</div>
     </details>`;
   }).join('') || '<div class="empty-device">没有符合条件的会话。</div>';
@@ -392,7 +385,7 @@ function updateStatus(element, status) {
   if (!element) return;
   const className = status === 'EXACT' ? 'exact' : status === 'ESTIMATED_LIVE' || status === 'LOWER_BOUND' ? 'estimated' : 'stale';
   element.className = `pill ${className}`;
-  updateText(element, status);
+  updateText(element, status === 'LOWER_BOUND' ? '用量待确认' : status);
 }
 
 function updateRecordRow(row, record) {
@@ -627,6 +620,10 @@ let rangeLoader;
 let eventStream;
 let rangeDraft = false;
 let refreshCoalesceMS = 200;
+const connection = realtime.connectionClock();
+let realtimeConfig = {...realtime.defaults};
+let lastPulse, pulseAt = 0, probeAt = 0, probeBusy = false, rttMS = null, lastFallback = performance.now();
+let snapshotFailed = false, stopGlow = () => {}, resumedAt = -1000;
 const autoApplyRange = debounce(() => applyRange(), 300);
 function loadPeriod(manual = false) {
   if (rangeDraft) return;
@@ -653,6 +650,7 @@ function choosePeriod() {
     return;
   }
   appliedQuery = rangeQuery(period);
+  connect();
   loadPeriod(true);
 }
 function applyRange() {
@@ -660,6 +658,7 @@ function applyRange() {
   try {
     appliedQuery = rangeQuery($('#period').value, $('#from').value, $('#to').value);
     rangeDraft = false;
+    connect();
     loadPeriod(true);
   } catch (error) {
     rangeDraft = true;
@@ -680,27 +679,163 @@ function timeInputChanged() {
 }
 function connect() {
   eventStream?.close();
-  const events = new EventSource('/events?notify=1');
+  connection.close();
+  if (document.hidden) return;
+  const events = new EventSource(`/events?stream=1&${appliedQuery}`);
   eventStream = events;
+  let opened = false;
   events.onopen = () => {
-    $('#sse').textContent = '实时已连接';
-    $('#sse').className = 'pill online';
+    if (eventStream !== events) return;
+    connection.open();
+    if (opened) loadPeriod(); // Native EventSource reconnect: fetch a fresh base.
+    opened = true;
+    updateConnectionUI();
   };
-  events.addEventListener('ready', scheduleRefresh);
-  events.addEventListener('changed', scheduleRefresh);
+  const consume = (name, action) => events.addEventListener(name, event => {
+    if (eventStream !== events || document.hidden || rangeDraft) return;
+    try {
+      const data = JSON.parse(event.data);
+      connection.received();
+      window.meterDiagnostics = {...window.meterDiagnostics, sse_received_at: new Date().toISOString()};
+      action(data);
+    } catch (_) { scheduleRefresh(); }
+  });
+  consume('ready', data => {
+    if (!rangeLoader?.busy() && (!state.generated_at || data.server_epoch !== state.server_epoch || data.revision !== state.data_revision)) loadPeriod();
+  });
+  consume('changed', scheduleRefresh); // Backward-compatible invalidation.
+  consume('heartbeat', data => {
+    if (!connection.heartbeat(data)) return;
+    applyPulse(data);
+    if (state.server_epoch && data.server_epoch !== state.server_epoch) loadPeriod();
+    else if (data.revision > (state.data_revision ?? -1)) {
+      // A healthy stream may still be finishing its numeric frame. Only a
+      // persistent version gap asks for history; the heartbeat itself is cheap.
+      setTimeout(() => { if (!document.hidden && data.revision > (state.data_revision ?? -1)) loadPeriod(); }, realtimeConfig.heartbeat_ms);
+    }
+  });
+  consume('numbers', data => {
+    const result = realtime.applyNumbers(state, data);
+    if (result.resync) { loadPeriod(); return; }
+    if (result.value) applyConfirmed(result.value);
+  });
+  consume('resync', () => loadPeriod());
   events.onerror = () => {
-    $('#sse').textContent = '重连中';
-    $('#sse').className = 'pill offline';
-    // EventSource reconnects itself. One slow fallback timer below covers both
-    // disconnected streams and changes to online/active status without events.
+    if (eventStream !== events) return;
+    connection.fail();
+    updateConnectionUI();
+    // EventSource retries transport. Failures never alter confirmed numbers.
   };
 }
 
+function applyConfirmed(data, timing) {
+  if (!realtime.acceptsSnapshot(state, data, connection.expectedEpoch)) {
+    if (data.server_epoch && data.server_epoch !== state.server_epoch) connect();
+    else scheduleRefresh();
+    return;
+  }
+  const previous = state;
+  pulseAt = performance.now();
+  connection.applied(data);
+  snapshotFailed = false;
+  if (timing) window.meterDiagnostics = {...window.meterDiagnostics, snapshot_request_ms: timing.request_ms};
+  render(data);
+  const same = previous.query_key === data.query_key && previous.server_epoch === data.server_epoch;
+  const change = Number(data.totals.total_tokens) - Number(previous.totals.total_tokens || 0);
+  const total = token(data.totals.total_tokens);
+  if (!same) updateText($('#confirmedChange'), `已确认 ${total} Token（${periodLabels[data.period]}）`);
+  else if (change) updateText($('#confirmedChange'), `${change > 0 ? '本次确认 +' : '范围更新/校正 −'}${token(Math.abs(change))} Token · 最新精确值 ${total}`);
+  if (same && change && !document.hidden) {
+    stopGlow();
+    stopGlow = realtime.highlight($('[data-card="exact"]'), {reduced: matchMedia('(prefers-reduced-motion: reduce)').matches});
+  }
+  $('#loadStatus').dataset.state = 'ready';
+  updateText($('#loadStatus'), `已筛选：${periodLabels[data.period] || '今天'}`);
+  $('#cards').setAttribute('aria-busy', 'false');
+  updateConnectionUI();
+}
+
+function applyPulse(data) {
+  lastPulse = data; pulseAt = performance.now();
+  if (data.realtime_config) {
+    realtimeConfig = {...realtimeConfig, ...data.realtime_config};
+    connection.configure(realtimeConfig);
+    refreshCoalesceMS = realtimeConfig.coalesce_ms;
+  }
+  if (data.hosts) state.hosts = data.hosts;
+  if (data.runtime) state.runtime = data.runtime;
+  updateConnectionUI();
+}
+
+function taskRuntimeLabel(hostID, rootID) {
+  const host = (state.hosts || []).find(item => item.host_id === hostID);
+  const rows = (state.runtime || []).filter(item => item.host_id === hostID && (item.conversation_id === rootID || item.parent_conversation_id === rootID))
+    .map(item => ({...item, evidence_age_ms: item.evidence_age_ms + performance.now() - pulseAt}));
+  const result = realtime.runtimeStatus({hosts: host ? [host] : [], runtime: rows});
+  return ({ESTIMATED_LIVE: `ESTIMATED_LIVE · ${token(result.live)} Token估算`, RUNNING: '执行中，等待usage', IDLE: '已完成/空闲', UNKNOWN: '运行状态未知'})[result.state];
+}
+
+function updateConnectionUI() {
+  const status = connection.status();
+  const labels = {online: status.synced ? '已同步' : '连接正常·同步中', verifying: '连接待验证', delayed: '心跳延迟·待确认', offline: '网页连接失联'};
+  updateText($('#sse'), labels[status.connection]);
+  $('#sse').className = `pill ${status.connection === 'online' ? 'online' : 'offline'}`;
+  const elapsed = pulseAt ? performance.now() - pulseAt : 0;
+  let pending = false, unknown = false;
+  for (const host of state.hosts || []) {
+    const age = Number(host.last_seen_age_ms || 0) + elapsed;
+    host.connection_state = age >= realtimeConfig.offline_ms ? 'offline' : age >= realtimeConfig.delayed_ms ? 'delayed' : 'online';
+    const telemetry = host.telemetry;
+    let sync = !telemetry ? '采集进度未知（旧版Agent）' : telemetry.pending_events > 0 || telemetry.upload_failed ? `待上传 ${token(telemetry.pending_events)} 条事件` : '队列已同步';
+    if (telemetry && (telemetry.scan_failed || telemetry.scan_age_ms < 0 || telemetry.scan_age_ms + elapsed > realtimeConfig.delayed_ms)) sync = '扫描数据陈旧，待确认';
+    if (!telemetry || host.connection_state !== 'online') unknown = true;
+    if (telemetry?.pending_events || telemetry?.upload_failed || telemetry?.scan_failed || sync.includes('陈旧')) pending = true;
+    const device = document.querySelector(`[data-device-key="${domKey(host.host_id)}"]`);
+    if (!device) continue;
+    const pill = device.querySelector('[data-device-online]');
+    updateText(pill, ({online: '采集器在线', delayed: '采集器待确认', offline: '采集器失联'})[host.connection_state]);
+    if (pill) pill.className = `pill ${host.connection_state === 'online' ? 'online' : 'offline'}`;
+    updateText(device.querySelector('[data-device-health]'), `${sync}${telemetry ? ` · 最近扫描 ${stamp(telemetry.last_scan_at)} · 发现usage ${stamp(telemetry.last_usage_at)} · 上传成功 ${stamp(telemetry.last_upload_at)} · 扫描${trimNumber(telemetry.scan_ms, 1)}ms / 上传请求${trimNumber(telemetry.upload_ms, 1)}ms` : ''}`);
+  }
+  const summary = status.connection !== 'online' ? `${labels[status.connection]}；保留最后确认数字，正在尝试恢复` : snapshotFailed ? '网页连接正常，但数据加载失败；保留最后确认数字' : !status.synced ? '网页连接正常，正在追平最新数据' : pending ? '网页连接正常；采集器仍有待同步/待确认数据' : unknown ? '网页连接正常；部分采集器进度未知或失联' : '连接正常，等待下一次用量上报';
+  updateText($('#syncSummary'), summary);
+  document.querySelectorAll('[data-session-key]').forEach(element => {
+    const [hostID, rootID] = element.dataset.sessionKey.split('|').map(decodeURIComponent);
+    updateText(element.querySelector('[data-session-runtime]'), taskRuntimeLabel(hostID, rootID));
+  });
+  updateText($('#dataStatus'), state.generated_at ? `数据截至 ${stamp(state.generated_at)} · 最近精确入账 ${stamp(state.last_ledger_at)}` : '尚未确认数据');
+  updateText($('#transportTiming'), `轻量请求RTT：${rttMS === null ? '待测量' : `${trimNumber(rttMS, 1)}ms`} · SSE心跳：${status.heartbeat_age_ms === null ? '尚未验证' : `${trimNumber(status.heartbeat_age_ms / 1000, 1)}秒前`} · 最近发送 ${stamp(lastPulse?.sse_last_sent_at)}`);
+  const diag = window.meterDiagnostics || {};
+  updateText($('#browserTiming'), `最近SSE接收 ${stamp(diag.sse_received_at)} · 快照请求含正文 ${trimNumber(diag.snapshot_request_ms, 1)}ms · 服务端构建 ${trimNumber(diag.server_build_ms, 1)}ms · 浏览器应用 ${trimNumber(diag.apply_ms, 1)}ms`);
+  updateText($('#ledgerTiming'), `服务器轮次 ${state.server_epoch || '待确认'} · 页面数据版本 ${state.revision ?? '待确认'} · 账本版本 ${state.ledger_revision ?? '待确认'}；设备时钟未校准，不据此计算跨设备端到端毫秒延迟。`);
+  if (state.generated_at) renderCards(state);
+}
+
+async function probeConnection() {
+  if (probeBusy || document.hidden) return;
+  probeBusy = true; probeAt = performance.now();
+  try {
+    const response = await fetch('/api/realtime', {cache: 'no-store', signal: AbortSignal.timeout(8000)});
+    if (!response.ok) throw new Error('probe failed');
+    const data = await response.json();
+    rttMS = performance.now() - probeAt;
+    // HTTP reachability is not an SSE heartbeat and cannot certify that stream.
+    if (state.server_epoch && data.server_epoch !== state.server_epoch && !rangeDraft) { connect(); loadPeriod(); }
+    applyPulse(data);
+  } catch (_) { rttMS = null; }
+  finally { probeBusy = false; updateConnectionUI(); }
+}
+
+function resumeDashboard() {
+  if (document.hidden || performance.now() - resumedAt < 100) return;
+  resumedAt = performance.now();
+  stopGlow();
+  connect(); loadPeriod(true); probeConnection();
+}
+
 function startDashboard() {
-  rangeLoader = createRangeLoader(fetch, (data,timing) => {
-    window.meterDiagnostics = {...window.meterDiagnostics, snapshot_request_ms: timing.request_ms};
-    render(data);
-  }, (status, manual, message) => {
+  rangeLoader = createRangeLoader(fetch, applyConfirmed, (status, manual, message) => {
+    if (status === 'error') snapshotFailed = true;
     if (status === 'loading' && !manual && state.generated_at) return;
     $('#loadStatus').dataset.state = status;
     $('#loadStatus').textContent = status === 'loading' ? '正在加载所选范围…' : status === 'error' ? message : `已筛选：${periodLabels[state.period] || '今天'}`;
@@ -748,13 +883,28 @@ function startDashboard() {
   document.addEventListener('selectionchange', () => {
     const selection = document.getSelection?.();
     if (structurePending && (!selection || selection.isCollapsed)) renderGroups(true);
+    if (state.generated_at && (!selection || selection.isCollapsed)) renderCards(state);
   });
   loadPeriod(true);
   connect();
-  window.addEventListener('pagehide', () => eventStream?.close());
-  window.addEventListener('pageshow', event => { if (event.persisted) { connect(); loadPeriod(true); } });
-  setInterval(() => { if (!document.hidden) loadPeriod(); }, 15000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) loadPeriod(); });
+  probeConnection();
+  const suspend = () => { stopGlow(); eventStream?.close(); eventStream = undefined; connection.close(); clearTimeout(refreshTimer); refreshTimer = undefined; rangeLoader.cancel(); };
+  window.addEventListener('pagehide', suspend);
+  window.addEventListener('pageshow', event => { if (event.persisted) resumeDashboard(); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) suspend(); else resumeDashboard(); });
+  window.addEventListener('offline', () => {
+    // Some browsers keep an established stream or queued callbacks alive after
+    // going offline. Invalidate that transport; only a fresh connection can
+    // provide new evidence. Retain the last heartbeat age and confirmed values.
+    suspend(); connection.fail(); updateConnectionUI();
+  });
+  window.addEventListener('online', resumeDashboard); // A hint to verify, never proof of connectivity.
+  setInterval(() => {
+    if (document.hidden) return;
+    updateConnectionUI();
+    if (performance.now() - probeAt >= realtimeConfig.probe_ms) probeConnection();
+    if (connection.status().connection !== 'online' && performance.now() - lastFallback >= 15000) { lastFallback = performance.now(); loadPeriod(); }
+  }, 1000);
 }
 
 if (typeof document !== 'undefined') startDashboard();

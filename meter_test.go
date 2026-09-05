@@ -640,7 +640,7 @@ func TestAgentSpoolOfflineThenRecovery(t *testing.T) {
 	if n != 1 {
 		t.Fatal("offline spool lost")
 	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { writeJSON(w, map[string]int{"accepted": 1}) }))
 	defer srv.Close()
 	cfg.ServerURL = srv.URL
 	if err := flushSpool(context.Background(), db, &cfg); err != nil {

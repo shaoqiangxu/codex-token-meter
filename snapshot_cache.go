@@ -91,7 +91,13 @@ func (s *server) cachedSnapshot(ctx context.Context, r dashboardRange) (*encoded
 	s.hub.mu.Lock()
 	revision := s.hub.seq
 	s.hub.mu.Unlock()
-	return s.snapshots.get(ctx, fmt.Sprintf("%s|%d", r.cacheKey(), revision), func() any { return s.buildSnapshotForRange(r) })
+	return s.snapshots.get(ctx, fmt.Sprintf("%s|%d", r.cacheKey(), revision), func() any {
+		value := s.buildSnapshotForRange(r).(map[string]any)
+		if value["error"] == nil {
+			value = s.rememberNumericBase(r, value)
+		}
+		return value
+	})
 }
 
 func (s *server) snapshotForRange(r dashboardRange) any {

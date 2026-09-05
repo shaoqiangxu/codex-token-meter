@@ -83,6 +83,7 @@ func (s *server) buildSnapshotForRange(r dashboardRange) any {
 	v["timezone"] = "Asia/Shanghai"
 	v["timezone_label"] = "北京时间 UTC+8"
 	v["range_end"] = r.End
+	v["runtime"] = s.runtimeViews()
 	s.attachWatermark(v, r.cacheKey(), started)
 	return v
 }

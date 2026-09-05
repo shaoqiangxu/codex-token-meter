@@ -32,6 +32,7 @@ type server struct {
 	ingestTimes map[string][]time.Time
 	snapshots   snapshotCache
 	viewMu      sync.RWMutex
+	numeric     numericViews
 }
 
 func runServer(ctx context.Context, configPath string) error {
@@ -59,6 +60,8 @@ func runServer(ctx context.Context, configPath string) error {
 	s.hub.heartbeatInterval = time.Duration(cfg.Realtime.normalized().HeartbeatMS) * time.Millisecond
 	s.hub.pulse = s.heartbeat
 	s.hub.notification = func() any { return s.watermark() }
+	s.hub.numbers = s.numericMessage
+	s.hub.windowDue = s.numericWindowDue
 	go s.hub.run(ctx, s.snapshot)
 	go s.vercelPriceLoop(ctx)
 	go s.openAIPriceLoop(ctx)
@@ -225,6 +228,10 @@ func validUsageEvent(e UsageEvent) bool {
 	}
 	switch e.EventType {
 	case "baseline", "exact_usage", "live_estimate", "activity":
+	case "runtime":
+		if e.RunState != "running" && e.RunState != "idle" {
+			return false
+		}
 	default:
 		return false
 	}
@@ -276,6 +283,9 @@ func (s *server) applyEvent(tx *sql.Tx, e UsageEvent) error {
 	inserted, _ := seen.RowsAffected()
 	if inserted == 0 {
 		return nil
+	}
+	if err := applyRuntime(tx, e); err != nil {
+		return err
 	}
 	if e.EventType == "baseline" {
 		_, err := tx.Exec(`INSERT INTO conversation_counters(host_id,conversation_id,input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,total_tokens,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(host_id,conversation_id) DO UPDATE SET input_tokens=excluded.input_tokens,cached_input_tokens=excluded.cached_input_tokens,cache_write_input_tokens=excluded.cache_write_input_tokens,output_tokens=excluded.output_tokens,reasoning_output_tokens=excluded.reasoning_output_tokens,total_tokens=excluded.total_tokens,updated_at=excluded.updated_at`, e.HostID, e.ConversationID, e.Counts.InputTokens, e.Counts.CachedInputTokens, e.Counts.CacheWriteInputTokens, e.Counts.OutputTokens, e.Counts.ReasoningOutputTokens, e.Counts.TotalTokens, e.Timestamp.Format(time.RFC3339Nano))

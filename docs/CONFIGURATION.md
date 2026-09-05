@@ -15,6 +15,13 @@
   "session_secret": "replace-with-a-long-random-secret",
   "public_url": "https://meter.example.com",
   "artifact_dir": "/opt/codex-token-meter/dist",
+  "realtime": {
+    "coalesce_ms": 200,
+    "heartbeat_ms": 5000,
+    "delayed_ms": 12000,
+    "offline_ms": 30000,
+    "probe_ms": 30000
+  },
   "project_aliases": {
     "example-project": "Example Project"
   }
@@ -31,6 +38,8 @@ openssl rand -hex 32
 `listen` 只能使用 `127.0.0.1`、`localhost` 或 `::1`。请通过 Cloudflare Tunnel、反向代理或私有网络入口提供 TLS，不要直接将应用端口暴露到公网。
 
 `project_aliases` 可省略。只有确认是同一个项目时，才将旧名称或仓库目录名映射到统一显示名；匹配区分大小写，服务重启后生效。它只统一项目展示名称，不合并两个真实任务、不跨设备聚合，也不修改原始用量和历史价格。不要为名称相似但实际不同的项目设置同一别名。
+
+`realtime` 可省略，以上为默认值。合并周期限定100–250ms；心跳1–10秒；延迟阈值至少两个心跳周期，失联阈值必须晚于延迟阈值。配置由服务端下发网页，修改后只需重启 Meter 服务。轻量认证探测测量实际请求往返耗时，不是浏览器时间减服务器时间。完整协议及兼容性见[实时同步说明](REALTIME.md)。
 
 ## Agent
 

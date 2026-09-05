@@ -23,10 +23,10 @@ func (c RealtimeConfig) normalized() RealtimeConfig {
 		c.HeartbeatMS = 5000
 	}
 	if c.DelayedMS < c.HeartbeatMS*2 {
-		c.DelayedMS = 12000
+		c.DelayedMS = max(12000, c.HeartbeatMS*2)
 	}
 	if c.OfflineMS <= c.DelayedMS {
-		c.OfflineMS = 30000
+		c.OfflineMS = max(30000, c.DelayedMS+10000)
 	}
 	if c.ProbeMS < 10000 {
 		c.ProbeMS = 30000
@@ -69,6 +69,7 @@ func (s *server) watermark() map[string]any {
 func (s *server) heartbeat() any {
 	m := s.watermark()
 	m["hosts"] = s.hostViews()
+	m["runtime"] = s.runtimeViews()
 	m["realtime_config"] = s.cfg.Realtime.normalized()
 	return m
 }
@@ -86,6 +87,7 @@ func (s *server) attachWatermark(value map[string]any, queryKey string, started 
 	for k, v := range s.watermark() {
 		value[k] = v
 	}
+	value["data_revision"] = value["revision"]
 	value["query_key"] = queryKey
 	value["server_build_ms"] = float64(time.Since(started).Microseconds()) / 1000
 	value["realtime_config"] = s.cfg.Realtime.normalized()
