@@ -73,6 +73,9 @@ func rangeBound(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05
 
 func (s *server) buildSnapshotForRange(r dashboardRange) any {
 	v := s.snapshotBetween(r.Start, r.End).(map[string]any)
+	var firstEvent string
+	_ = s.db.QueryRow("SELECT timestamp FROM usage_events ORDER BY timestamp LIMIT 1").Scan(&firstEvent)
+	v["data_start"] = firstEvent
 	v["period"] = r.Period
 	v["timezone"] = "Asia/Shanghai"
 	v["timezone_label"] = "北京时间 UTC+8"

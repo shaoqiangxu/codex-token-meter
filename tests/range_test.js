@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const {rangeQuery, rangeRule, createRangeLoader, dashboardCards} = require('../web/app.js');
+const {rangeQuery, rangeRule, createRangeLoader, dashboardCards, debounce} = require('../web/app.js');
 
 async function main() {
   const preset = rangeQuery('24h', '2026-09-01T00:00', '2026-09-02T00:00');
@@ -34,6 +34,20 @@ async function main() {
   requests[3].resolve(response('all'));
   await retry;
   assert.equal(rendered.at(-1).period, 'all', 'failed loads must be retryable');
+  const draft = loader('period=today', true);
+  loader.cancel();
+  assert.ok(requests[4].signal.aborted, 'editing a date must cancel the old range immediately');
+  requests[4].resolve(response('today'));
+  await draft;
+  assert.equal(rendered.at(-1).period, 'all', 'an old request must not overwrite an in-progress date edit');
+  let changes = 0;
+  const autoApply = debounce(() => changes++, 5);
+  autoApply(); autoApply(); autoApply();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(changes, 1, 'input and change events should produce one automatic filter');
+  autoApply(); autoApply.cancel();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(changes, 1, 'switching presets must cancel pending date edits');
   console.log('Range, cancellation, coalescing and pricing labels: passed');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

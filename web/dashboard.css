@@ -42,6 +42,7 @@ header>div,main,.card,.panel,.device-group,.project-group,.project-sessions,.ses
 .range-rule{color:var(--muted);font-size:12px;margin-top:4px}
 .custom-range{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:12px;margin-top:14px;align-items:end;max-width:850px}
 .custom-range label{display:grid;gap:5px;min-width:0;font-size:12px;color:var(--muted)}
+.auto-filter-note{grid-column:1/-1;color:var(--muted);font-size:11px}
 .custom-range input{min-width:0;width:100%;max-width:100%;min-height:44px}
 .management{margin-top:14px;border:1px solid var(--line);border-radius:12px;background:var(--panel)}
 .management>summary{cursor:pointer;padding:12px 16px;color:var(--muted)}

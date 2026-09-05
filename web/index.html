@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#09111f"><title>Codex Token Meter</title><link rel="stylesheet" href="/style.css?v=6"><link rel="stylesheet" href="/dashboard.css?v=7"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#09111f"><title>Codex Token Meter</title><link rel="stylesheet" href="/style.css?v=6"><link rel="stylesheet" href="/dashboard.css?v=8"></head>
 <body>
 <header><div><span class="brand">Codex Token Meter</span><span class="sub">实时、可核验的本地 Codex 用量</span></div><div class="header-actions"><span id="sse" class="pill offline">SSE 连接中</span><a href="/logout">退出</a></div></header>
 <main>
@@ -13,10 +13,12 @@
     <div id="customRange" class="custom-range" hidden>
       <label for="from">开始时间（北京时间）<input id="from" type="datetime-local"></label>
       <label for="to">结束时间（留空为现在）<input id="to" type="datetime-local"></label>
-      <button id="applyRange" class="secondary">应用时间</button>
+      <button id="applyRange" class="secondary">立即刷新</button>
+      <span class="auto-filter-note">选择时间后自动筛选，无需点击按钮</span>
     </div>
     <div id="rangeText" class="range-text">正在读取时间范围…</div>
     <div id="rangeRule" class="range-rule">今天：北京时间00:00起，统计到现在</div>
+    <div id="dataCoverage" class="range-rule"></div>
   </section>
   <section id="cards" class="cards" aria-label="用量与价格" aria-busy="true"></section>
   <details class="management"><summary>设备管理与导出</summary><div class="management-actions">
@@ -26,4 +28,4 @@
   <section class="panel"><div class="panel-title"><div><h2>按设备与项目聚拢的会话</h2><div class="panel-explain">这里只统计各项目的 Codex 任务用量。监控服务不调用模型 API，也不会产生 Token。</div></div><span id="updated">等待数据</span></div><div class="session-filter"><input id="filter" type="search" aria-label="筛选主机、项目、模型或会话" placeholder="筛选主机 / 项目 / 模型 / 会话"></div><div id="sessionGroups" class="session-groups"></div></section>
 </main>
 <dialog id="dialog"><button class="close" id="close">×</button><h2 id="dialogTitle">详情</h2><div id="dialogBody"></div></dialog>
-<script src="/app.js?v=7"></script></body></html>
+<script src="/app.js?v=8"></script></body></html>

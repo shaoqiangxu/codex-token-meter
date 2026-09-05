@@ -3,6 +3,13 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use semantic versioning.
 
+## [0.1.4] - 2026-09-05
+
+### Fixed
+
+- Apply custom date/time changes automatically after a short debounce; no Apply button is required. Cancel old requests immediately while dates are being edited, and keep invalid ranges from silently showing unrelated results.
+- Show the active filter and the earliest collected-data timestamp so identical totals across today/week/month can be understood. Avoid caching the dashboard HTML across UI upgrades.
+
 ## [0.1.3] - 2026-09-05
 
 ### Fixed
@@ -47,6 +54,7 @@ Existing Windows and Linux agents remain compatible; this dashboard/server updat
 - Keep response-item IDs (`msg_*`, `ctc_*`, `ctco_*`) separate from the owning Codex task ID so tool calls cannot create fake sessions.
 - Detect cumulative Token counter restarts inside an append-only rollout file and begin a new source epoch without losing usage.
 
+[0.1.4]: https://github.com/shaoqiangxu/codex-token-meter/releases/tag/v0.1.4
 [0.1.3]: https://github.com/shaoqiangxu/codex-token-meter/releases/tag/v0.1.3
 [0.1.2]: https://github.com/shaoqiangxu/codex-token-meter/releases/tag/v0.1.2
 [0.1.1]: https://github.com/shaoqiangxu/codex-token-meter/releases/tag/v0.1.1

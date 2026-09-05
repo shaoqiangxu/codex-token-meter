@@ -382,6 +382,9 @@ func (s *server) hostViews() []map[string]any {
 }
 func (s *server) static(w http.ResponseWriter, r *http.Request) {
 	name := "web/index.html"
+	if r.URL.Path == "/" {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	if r.URL.Path != "/" {
 		name = "web/" + strings.TrimPrefix(r.URL.Path, "/")
 	}

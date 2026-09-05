@@ -149,6 +149,7 @@ function render(snapshot, forceStructure = false) {
   const start = snapshot.period === 'all' ? '开始监控' : stamp(snapshot.range_start);
   updateText($('#rangeText'), `${start} → ${stamp(snapshot.range_end)}`);
   updateText($('#rangeRule'), rangeRule(snapshot.period));
+  updateText($('#dataCoverage'), snapshot.data_start ? `已采集数据始于 ${stamp(snapshot.data_start)}（北京时间）` : '尚无已采集的用量记录');
 }
 
 const sumFields = ['live_estimate', 'total_tokens', 'input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens', 'api_cost', 'vercel_cost', 'credits'];
@@ -569,7 +570,7 @@ function rangeQuery(period, from = '', to = '') {
 function createRangeLoader(fetcher, onData, onStatus) {
   let sequence = 0;
   let current;
-  return async (query, replace = false) => {
+  const load = async (query, replace = false) => {
     if (current && !replace) return;
     current?.abort();
     const controller = new AbortController();
@@ -593,13 +594,25 @@ function createRangeLoader(fetcher, onData, onStatus) {
       if (ticket === sequence) current = null;
     }
   };
+  load.cancel = () => { sequence++; current?.abort(); current = null; };
+  return load;
+}
+
+function debounce(action, delay) {
+  let timer;
+  const run = () => { clearTimeout(timer); timer = setTimeout(action, delay); };
+  run.cancel = () => clearTimeout(timer);
+  return run;
 }
 
 let appliedQuery = 'period=today';
 let refreshTimer;
 let rangeLoader;
 let eventStream;
+let rangeDraft = false;
+const autoApplyRange = debounce(() => applyRange(), 300);
 function loadPeriod(manual = false) {
+  if (rangeDraft) return;
   if (manual) clearTimeout(refreshTimer);
   if (manual) refreshTimer = undefined;
   return rangeLoader(appliedQuery, manual === true);
@@ -609,28 +622,44 @@ function scheduleRefresh() {
   refreshTimer = setTimeout(() => { refreshTimer = undefined; loadPeriod(); }, 1000);
 }
 function choosePeriod() {
+  autoApplyRange.cancel();
+  rangeDraft = false;
   const period = $('#period').value;
   $('#customRange').hidden = period !== 'custom';
   if (period === 'custom') {
     if (!$('#from').value) {
       const local = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 16);
       $('#from').value = `${local.slice(0, 10)}T00:00`;
-      $('#to').value = local;
+      $('#to').value = '';
     }
-    updateText($('#loadStatus'), '请选择时间后点“应用时间”；下方仍显示上次结果');
+    applyRange();
     return;
   }
   appliedQuery = rangeQuery(period);
   loadPeriod(true);
 }
 function applyRange() {
+  autoApplyRange.cancel();
   try {
     appliedQuery = rangeQuery($('#period').value, $('#from').value, $('#to').value);
+    rangeDraft = false;
     loadPeriod(true);
   } catch (error) {
-    $('#loadStatus').textContent = error.message;
+    rangeDraft = true;
+    rangeLoader.cancel();
+    $('#loadStatus').textContent = `${error.message}；下方保留上次有效结果`;
     $('#loadStatus').dataset.state = 'error';
+    $('#cards').setAttribute('aria-busy', 'false');
+    $('#retryRange').hidden = true;
   }
+}
+function timeInputChanged() {
+  rangeDraft = true;
+  rangeLoader.cancel();
+  $('#loadStatus').textContent = '正在按所选时间筛选…';
+  $('#loadStatus').dataset.state = 'loading';
+  $('#cards').setAttribute('aria-busy', 'true');
+  autoApplyRange();
 }
 function connect() {
   eventStream?.close();
@@ -654,12 +683,16 @@ function startDashboard() {
   rangeLoader = createRangeLoader(fetch, render, (status, manual, message) => {
     if (status === 'loading' && !manual && state.generated_at) return;
     $('#loadStatus').dataset.state = status;
-    $('#loadStatus').textContent = status === 'loading' ? '正在加载所选范围…' : status === 'error' ? message : '已更新';
+    $('#loadStatus').textContent = status === 'loading' ? '正在加载所选范围…' : status === 'error' ? message : `已筛选：${periodLabels[state.period] || '今天'}`;
     $('#retryRange').hidden = status !== 'error';
     $('#cards').setAttribute('aria-busy', String(status === 'loading'));
   });
   $('#applyRange').onclick = applyRange;
   $('#period').onchange = choosePeriod;
+  for (const id of ['#from', '#to']) {
+    $(id).oninput = timeInputChanged;
+    $(id).onchange = timeInputChanged;
+  }
   $('#retryRange').onclick = () => loadPeriod(true);
   $('#filter').oninput = () => renderGroups(true);
   $('#addWindows').onclick = () => enroll('windows');
@@ -705,4 +738,4 @@ function startDashboard() {
 }
 
 if (typeof document !== 'undefined') startDashboard();
-if (typeof module !== 'undefined' && module.exports) module.exports = {token, tokenM, groupedSessions, displayProjectName, dashboardCards, sessionMetricValues, viewStructure, updateText, rangeQuery, rangeRule, createRangeLoader};
+if (typeof module !== 'undefined' && module.exports) module.exports = {token, tokenM, groupedSessions, displayProjectName, dashboardCards, sessionMetricValues, viewStructure, updateText, rangeQuery, rangeRule, createRangeLoader, debounce};
