@@ -104,6 +104,9 @@ func TestLargeCompactionKeepsCheckpointAndUsage(t *testing.T) {
 
 func TestSourceNotificationWakesNewAndColdFiles(t *testing.T) {
 	dir := t.TempDir()
+	if inLogTree(filepath.Join(dir, "history.jsonl"), []string{dir}) || inLogTree(filepath.Join(dir, "sessions-other", "file.jsonl"), []string{dir}) {
+		t.Fatal("watcher expanded beyond configured log subtrees")
+	}
 	os.MkdirAll(filepath.Join(dir, "sessions"), 0700)
 	w, err := watchSources([]string{dir})
 	if err != nil {

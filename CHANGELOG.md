@@ -3,6 +3,13 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use semantic versioning.
 
+## [0.1.8] - 2026-09-05
+
+### Fixed
+
+- Restrict file notifications to configured session/archive log subtrees; watching the Codex home for a newly created sessions directory does not authorize collecting other root JSONL files.
+- Include independent task-state SSE sends in the last-send diagnostic timestamp.
+
 ## [0.1.7] - 2026-09-05
 
 ### Fixed

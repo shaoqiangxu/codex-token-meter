@@ -18,6 +18,7 @@ type sourceWatcher struct {
 	pending map[string]bool
 	rescan  bool
 	wake    chan struct{}
+	homes   []string
 }
 
 func watchSources(homes []string) (*sourceWatcher, error) {
@@ -25,7 +26,7 @@ func watchSources(homes []string) (*sourceWatcher, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &sourceWatcher{watcher: w, pending: map[string]bool{}, wake: make(chan struct{}, 1)}
+	s := &sourceWatcher{watcher: w, pending: map[string]bool{}, wake: make(chan struct{}, 1), homes: append([]string(nil), homes...)}
 	for _, home := range homes {
 		// Watch the home too: sessions may be created after Meter starts.
 		if err = w.Add(home); err != nil {
@@ -49,6 +50,9 @@ func watchSources(homes []string) (*sourceWatcher, error) {
 				if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Rename) == 0 {
 					continue
 				}
+				if !inLogTree(event.Name, s.homes) {
+					continue
+				}
 				if st, err := os.Stat(event.Name); err == nil && st.IsDir() {
 					// Only Codex log trees, never arbitrary home subdirectories.
 					p := filepath.ToSlash(event.Name) + "/"
@@ -69,6 +73,18 @@ func watchSources(homes []string) (*sourceWatcher, error) {
 		}
 	}()
 	return s, nil
+}
+
+func inLogTree(path string, homes []string) bool {
+	for _, home := range homes {
+		for _, directory := range []string{"sessions", "archived_sessions"} {
+			rel, err := filepath.Rel(filepath.Join(home, directory), path)
+			if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+				return true
+			}
+		}
+	}
+	return false
 }
 func (s *sourceWatcher) addTree(root string) error {
 	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
