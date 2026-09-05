@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use semantic versioning.
 
+## [0.1.9] - 2026-09-05
+
+### Fixed
+
+- Keep an unchanged GET on the last authoritative numeric revision, avoiding a real multi-browser resync loop where each GET was one version ahead of the shared SSE base. Retain strict old-frame rejection and range/price/expiry comparisons. This server-only correction does not require upgrading a 0.1.8 Agent again.
+
 ## [0.1.8] - 2026-09-05
 
 ### Fixed

@@ -68,6 +68,14 @@ func (s *server) adoptNumericLocked(r dashboardRange, value map[string]any) map[
 		if dataSeq < oldSeq || (dataSeq == oldSeq && !end.After(oldEnd)) {
 			return old
 		}
+		// A GET after a published frame must not create an intermediate version
+		// just because wall time advanced. Otherwise its reader is forever one
+		// version ahead of the shared published base and resyncs on every frame.
+		// Compare authoritative accounting, not only ledger ID: rolling expiry,
+		// prices, metadata and legitimate decreases still create a new revision.
+		if dataSeq == oldSeq && sameAccounting(old, value) {
+			return old
+		}
 	}
 	s.numeric.sequence++
 	value["revision"] = s.numeric.sequence
@@ -78,6 +86,15 @@ func (s *server) adoptNumericLocked(r dashboardRange, value map[string]any) map[
 		previous.used = time.Now()
 	}
 	return value
+}
+
+func sameAccounting(a, b map[string]any) bool {
+	for _, key := range []string{"range_start", "period", "sessions", "totals", "project_totals", "exchange_rate"} {
+		if !reflect.DeepEqual(a[key], b[key]) {
+			return false
+		}
+	}
+	return true
 }
 
 func rowKey(row map[string]any) string {

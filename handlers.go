@@ -208,7 +208,7 @@ func (s *server) snapshotBetween(since, until time.Time) any {
 		return map[string]any{"error": "database unavailable"}
 	}
 	defer rows.Close()
-	var list []map[string]any
+	list := []map[string]any{}
 	tot := TokenCounts{CacheWriteVisible: true}
 	for rows.Next() {
 		var v sessionView

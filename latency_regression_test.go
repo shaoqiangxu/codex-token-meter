@@ -125,3 +125,38 @@ func TestLiveRangeIncludesFractionalUsageImmediately(t *testing.T) {
 		t.Fatal("invalid frame")
 	}
 }
+
+func TestRepeatedGETDoesNotGetAheadOfPublishedStream(t *testing.T) {
+	s, done := testServerDB(t)
+	defer done()
+	q := url.Values{"period": {"today"}}
+	e := UsageEvent{EventID: "first", HostID: "h", SourceFileID: groupingRoot, ConversationID: groupingRoot, EventType: "exact_usage", Timestamp: time.Now().Add(-time.Second), Counts: counts(10, 0, 0, 0, 0)}
+	ingestSynthetic(t, s, e)
+	r, _ := resolveDashboardRange(q, time.Now())
+	current := s.rememberNumericBase(r, s.buildSnapshotForRange(r).(map[string]any))
+	for i := int64(0); i < 5; i++ {
+		// Different browsers GET after the prior publication, at different
+		// fractional times. No new usage: all must receive that same base.
+		for j := 0; j < 2; j++ {
+			r, _ = resolveDashboardRange(q, time.Now())
+			get := s.rememberNumericBase(r, s.buildSnapshotForRange(r).(map[string]any))
+			if get["revision"] != current["revision"] || get["range_end"] != current["range_end"] {
+				t.Fatal("no-op GET advanced ahead of published base")
+			}
+		}
+		e.EventID = itoa(i)
+		e.Counts.InputTokens++
+		e.Counts.TotalTokens++
+		ingestSynthetic(t, s, e)
+		frame := s.numericMessage(q)
+		if frame == nil || frame.Event != "numbers" {
+			t.Fatal("missing numeric frame")
+		}
+		var message map[string]any
+		json.Unmarshal(frame.Data, &message)
+		if message["base_revision"] != float64(current["revision"].(int64)) {
+			t.Fatal("recurring resync: stream base behind last GET")
+		}
+		current = s.numeric.entries[r.cacheKey()].value
+	}
+}
