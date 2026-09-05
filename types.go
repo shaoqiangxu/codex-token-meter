@@ -73,6 +73,7 @@ type AgentConfig struct {
 	health              *agentHealth
 	localDB             *sql.DB
 	scheduler           *scanScheduler
+	watcher             *sourceWatcher
 }
 
 type fileStamp struct {

@@ -13,13 +13,14 @@ import (
 
 type scanScheduler struct {
 	active                        map[string]time.Time
+	running                       map[string]bool
 	discovered, history, archived time.Time
 }
 
 // Network waits never own a SQLite transaction or the collector goroutine.
 // Wakeups coalesce in a one-slot channel; failures ignore wakeups until the
 // exponential backoff (with jitter) expires. The events remain in SQLite.
-func agentNetworkLoop(ctx context.Context, wake <-chan struct{}, idle, minimum time.Duration, operation func() error) {
+func agentNetworkLoop(ctx context.Context, wake <-chan struct{}, idle, minimum time.Duration, operation func() error, retry ...func(time.Time)) {
 	failures := 0
 	for {
 		if ctx.Err() != nil {
@@ -33,6 +34,9 @@ func agentNetworkLoop(ctx context.Context, wake <-chan struct{}, idle, minimum t
 			failures++
 			base := time.Second * time.Duration(1<<min(failures-1, 5))
 			delay := base + time.Duration(rand.Float64()*float64(base)/4)
+			for _, f := range retry {
+				f(time.Now().Add(delay))
+			}
 			logSafe("agent network deferred; retry in %s", delay.Round(time.Millisecond))
 			if !agentWait(ctx, delay) {
 				return
@@ -40,6 +44,9 @@ func agentNetworkLoop(ctx context.Context, wake <-chan struct{}, idle, minimum t
 			continue
 		}
 		failures = 0
+		for _, f := range retry {
+			f(time.Time{})
+		}
 		if !agentWait(ctx, minimum) {
 			return
 		}
@@ -78,7 +85,8 @@ func agentTelemetry(cfg *AgentConfig) *AgentTelemetry {
 		return nil
 	}
 	var pending int64
-	if err := cfg.localDB.QueryRow("SELECT COUNT(*) FROM spool").Scan(&pending); err != nil {
+	var oldest string
+	if err := cfg.localDB.QueryRow("SELECT COUNT(*),COALESCE(MIN(created_at),'') FROM spool").Scan(&pending, &oldest); err != nil {
 		return nil
 	}
 	cfg.health.Lock()
@@ -86,6 +94,10 @@ func agentTelemetry(cfg *AgentConfig) *AgentTelemetry {
 	cfg.health.value.ReportSeq++
 	value := cfg.health.value
 	value.PendingEvents = pending
+	if oldest != "" {
+		value.OldestPendingMS = max(0, time.Since(parseTime(oldest)).Milliseconds())
+	}
+	value.RetryRemainingMS = max(0, time.Until(value.RetryAt).Milliseconds())
 	value.ScanAgeMS = -1
 	if !value.LastScanAt.IsZero() {
 		value.ScanAgeMS = time.Since(value.LastScanAt).Milliseconds()
@@ -101,6 +113,10 @@ func observeScan(cfg *AgentConfig, started time.Time, err error) {
 	defer cfg.health.Unlock()
 	cfg.health.value.ScanMS = float64(time.Since(started).Microseconds()) / 1000
 	cfg.health.value.ScanFailed = err != nil
+	cfg.health.value.ScanError = ""
+	if err != nil {
+		cfg.health.value.ScanError = safeScanError(err)
+	}
 	if err == nil {
 		cfg.health.value.LastScanAt = time.Now().UTC()
 	}
@@ -125,7 +141,7 @@ func observeUpload(cfg *AgentConfig, started time.Time, success bool) {
 func scanScheduled(db *sql.DB, cfg *AgentConfig) error {
 	now := time.Now()
 	if cfg.scheduler == nil {
-		cfg.scheduler = &scanScheduler{active: map[string]time.Time{}, discovered: now, history: now, archived: now}
+		cfg.scheduler = &scanScheduler{active: map[string]time.Time{}, running: map[string]bool{}, discovered: now, history: now, archived: now}
 		if err := scanCodexFiles(db, cfg, false); err != nil {
 			cfg.scheduler = nil
 			return err
@@ -135,12 +151,33 @@ func scanScheduled(db *sql.DB, cfg *AgentConfig) error {
 				cfg.scheduler.active[stamp.path] = now
 			}
 		}
+		rows, err := db.Query("SELECT path FROM files WHERE runtime_state='running'")
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var path string
+			if rows.Scan(&path) == nil {
+				cfg.scheduler.running[path] = true
+				cfg.scheduler.active[path] = now
+			}
+		}
+		rows.Close()
 		return nil
 	}
 	s := cfg.scheduler
 	paths := map[string]bool{}
+	if cfg.watcher != nil {
+		var rescan bool
+		paths, rescan = cfg.watcher.drain()
+		if rescan {
+			s.discovered = time.Time{}
+			s.history = time.Time{}
+			s.archived = time.Time{}
+		}
+	}
 	for path, at := range s.active {
-		if now.Sub(at) < 2*time.Minute {
+		if s.running[path] || now.Sub(at) < 2*time.Minute {
 			paths[path] = true
 		} else {
 			delete(s.active, path)
@@ -204,6 +241,7 @@ func scanScheduled(db *sql.DB, cfg *AgentConfig) error {
 		st, err := os.Stat(path)
 		if os.IsNotExist(err) {
 			delete(s.active, path)
+			delete(s.running, path)
 			continue
 		}
 		if err != nil {

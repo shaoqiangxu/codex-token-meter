@@ -36,19 +36,27 @@ func (c RealtimeConfig) normalized() RealtimeConfig {
 
 // Only numeric health metadata. Never attach log lines or model content here.
 type AgentTelemetry struct {
-	AgentEpoch    string    `json:"agent_epoch"`
-	ReportSeq     uint64    `json:"report_seq"`
-	AgentVersion  string    `json:"agent_version"`
-	LastScanAt    time.Time `json:"last_scan_at"`
-	LastUsageAt   time.Time `json:"last_usage_at"`
-	LastUploadAt  time.Time `json:"last_upload_at"`
-	PendingEvents int64     `json:"pending_events"`
-	ScanMS        float64   `json:"scan_ms"`
-	UploadMS      float64   `json:"upload_ms"`
-	ScanAgeMS     int64     `json:"scan_age_ms"`
-	ScanFailed    bool      `json:"scan_failed"`
-	UploadFailed  bool      `json:"upload_failed"`
-	ActiveFiles   int       `json:"active_files"`
+	AgentEpoch       string    `json:"agent_epoch"`
+	ReportSeq        uint64    `json:"report_seq"`
+	AgentVersion     string    `json:"agent_version"`
+	BuildCommit      string    `json:"build_commit,omitempty"`
+	ProcessID        int       `json:"process_id"`
+	ProcessStartedAt time.Time `json:"process_started_at"`
+	OldestPendingMS  int64     `json:"oldest_pending_ms"`
+	RetryAt          time.Time `json:"retry_at"`
+	RetryRemainingMS int64     `json:"retry_remaining_ms"`
+	ScanError        string    `json:"scan_error,omitempty"`
+	WatchAvailable   bool      `json:"watch_available"`
+	LastScanAt       time.Time `json:"last_scan_at"`
+	LastUsageAt      time.Time `json:"last_usage_at"`
+	LastUploadAt     time.Time `json:"last_upload_at"`
+	PendingEvents    int64     `json:"pending_events"`
+	ScanMS           float64   `json:"scan_ms"`
+	UploadMS         float64   `json:"upload_ms"`
+	ScanAgeMS        int64     `json:"scan_age_ms"`
+	ScanFailed       bool      `json:"scan_failed"`
+	UploadFailed     bool      `json:"upload_failed"`
+	ActiveFiles      int       `json:"active_files"`
 }
 
 type agentHealth struct {
