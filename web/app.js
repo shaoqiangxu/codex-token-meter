@@ -62,7 +62,7 @@ function duration(value) {
 }
 
 function stamp(value) {
-  if (!value) return '未验证';
+  if (!value || String(value).startsWith('0001-01-01')) return '未验证';
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', {hour12: false, timeZone: 'Asia/Shanghai'});
 }

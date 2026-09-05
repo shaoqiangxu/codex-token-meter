@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const {connectionClock, acceptsSnapshot, applyNumbers, runtimeStatus, highlight} = require('../web/realtime.js');
-const {token} = require('../web/app.js');
+const {token, dashboardCards} = require('../web/app.js');
+assert.match(dashboardCards({last_ledger_at:'0001-01-01T00:00:00Z'})[0].note, /未验证/, 'zero timestamps mean unverified, not year 1');
 for (let n = 1; n <= 99; n++) assert.equal(token(1000000 + n), (1000000 + n).toLocaleString('en-US'));
 
 let time = 0;
