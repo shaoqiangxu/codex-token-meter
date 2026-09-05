@@ -72,11 +72,12 @@ type fileStamp struct {
 }
 
 type ServerConfig struct {
-	Listen            string `json:"listen"`
-	DataDir           string `json:"data_dir"`
-	AdminUser         string `json:"admin_user"`
-	AdminPasswordHash string `json:"admin_password_hash"`
-	SessionSecret     string `json:"session_secret"`
-	PublicURL         string `json:"public_url"`
-	ArtifactDir       string `json:"artifact_dir"`
+	Listen            string            `json:"listen"`
+	DataDir           string            `json:"data_dir"`
+	AdminUser         string            `json:"admin_user"`
+	AdminPasswordHash string            `json:"admin_password_hash"`
+	SessionSecret     string            `json:"session_secret"`
+	PublicURL         string            `json:"public_url"`
+	ArtifactDir       string            `json:"artifact_dir"`
+	ProjectAliases    map[string]string `json:"project_aliases,omitempty"`
 }

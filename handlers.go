@@ -191,16 +191,16 @@ func (s *server) snapshotSince(since time.Time) any {
 	return s.snapshotBetween(since, time.Now().UTC())
 }
 func (s *server) snapshotBetween(since, until time.Time) any {
-	rows, err := s.db.Query(`WITH u AS (SELECT host_id,conversation_id,SUM(input_tokens) input_tokens,SUM(cached_input_tokens) cached_input_tokens,SUM(cache_write_input_tokens) cache_write_input_tokens,SUM(output_tokens) output_tokens,SUM(reasoning_output_tokens) reasoning_output_tokens,SUM(total_tokens) total_tokens FROM usage_events WHERE timestamp>=? AND timestamp<? GROUP BY host_id,conversation_id)
-		SELECT s.host_id,a.alias,COALESCE(a.platform,''),s.conversation_id,COALESCE(s.parent_conversation_id,''),
+	rows, err := s.db.Query(`WITH `+sessionParentsCTE+`, u AS (SELECT host_id,conversation_id,SUM(input_tokens) input_tokens,SUM(cached_input_tokens) cached_input_tokens,SUM(cache_write_input_tokens) cache_write_input_tokens,SUM(output_tokens) output_tokens,SUM(reasoning_output_tokens) reasoning_output_tokens,SUM(total_tokens) total_tokens FROM usage_events WHERE timestamp>=? AND timestamp<? GROUP BY host_id,conversation_id)
+		SELECT s.host_id,a.alias,COALESCE(a.platform,''),s.conversation_id,s.display_parent_id,
 		COALESCE(NULLIF(parentm.project_name,''),NULLIF(ownm.project_name,''),NULLIF(s.repo_name,''),s.project_id,''),
 		COALESCE(NULLIF(s.display_name,''),NULLIF(parentm.conversation_name,''),NULLIF(ownm.conversation_name,''),''),
 		COALESCE(s.model,''),COALESCE(s.reasoning_effort,''),s.status,COALESCE(s.started_at,''),COALESCE(s.last_event_at,''),s.data_quality,s.model_context_window,
 		COALESCE(u.input_tokens,0),COALESCE(u.cached_input_tokens,0),COALESCE(u.cache_write_input_tokens,0),COALESCE(u.output_tokens,0),COALESCE(u.reasoning_output_tokens,0),COALESCE(u.total_tokens,0),s.live_estimate
-		FROM sessions s JOIN agents a ON a.host_id=s.host_id
+		FROM resolved_sessions s JOIN agents a ON a.host_id=s.host_id
 		LEFT JOIN u ON u.host_id=s.host_id AND u.conversation_id=s.conversation_id
 		LEFT JOIN session_metadata ownm ON ownm.host_id=s.host_id AND ownm.conversation_id=s.conversation_id
-		LEFT JOIN session_metadata parentm ON parentm.host_id=s.host_id AND parentm.conversation_id=s.parent_conversation_id
+		LEFT JOIN session_metadata parentm ON parentm.host_id=s.host_id AND parentm.conversation_id=s.display_parent_id
 		WHERE u.total_tokens IS NOT NULL OR s.live_estimate>0 ORDER BY s.last_event_at DESC`, rangeBound(since), rangeBound(until))
 	if err != nil {
 		return map[string]any{"error": "database unavailable"}
@@ -234,6 +234,7 @@ func (s *server) snapshotBetween(since, until time.Time) any {
 		if v.ContextWindow > 0 {
 			ctx = float64(v.Input) / float64(v.ContextWindow) * 100
 		}
+		v.Project = s.displayProjectName(v.Project, v.Name)
 		name := v.Name
 		if name == "" {
 			name = v.Project
@@ -293,16 +294,16 @@ type projectAggregate struct {
 }
 
 func (s *server) projectTotalsBetween(since, until time.Time, costs map[string]providerCosts) []map[string]any {
-	rows, err := s.db.Query(`WITH u AS (
+	rows, err := s.db.Query(`WITH `+sessionParentsCTE+`, u AS (
 		SELECT host_id,conversation_id,SUM(input_tokens) input_tokens,SUM(output_tokens) output_tokens,SUM(total_tokens) total_tokens
 		FROM usage_events WHERE timestamp>=? AND timestamp<? GROUP BY host_id,conversation_id
-	) SELECT s.host_id,s.conversation_id,COALESCE(s.parent_conversation_id,''),
+	) SELECT s.host_id,s.conversation_id,s.display_parent_id,
 		COALESCE(NULLIF(parentm.project_name,''),NULLIF(ownm.project_name,''),NULLIF(s.repo_name,''),s.project_id,''),
 		COALESCE(NULLIF(s.display_name,''),NULLIF(parentm.conversation_name,''),NULLIF(ownm.conversation_name,''),''),
 		u.input_tokens,u.output_tokens,u.total_tokens
-		FROM u JOIN sessions s ON s.host_id=u.host_id AND s.conversation_id=u.conversation_id
+		FROM u JOIN resolved_sessions s ON s.host_id=u.host_id AND s.conversation_id=u.conversation_id
 		LEFT JOIN session_metadata ownm ON ownm.host_id=s.host_id AND ownm.conversation_id=s.conversation_id
-		LEFT JOIN session_metadata parentm ON parentm.host_id=s.host_id AND parentm.conversation_id=s.parent_conversation_id`, rangeBound(since), rangeBound(until))
+		LEFT JOIN session_metadata parentm ON parentm.host_id=s.host_id AND parentm.conversation_id=s.display_parent_id`, rangeBound(since), rangeBound(until))
 	if err != nil {
 		return nil
 	}
@@ -314,7 +315,7 @@ func (s *server) projectTotalsBetween(since, until time.Time, costs map[string]p
 		if rows.Scan(&hostID, &conversationID, &parentID, &rawProject, &conversationName, &input, &output, &total) != nil {
 			continue
 		}
-		project := effectiveProjectName(rawProject, conversationName)
+		project := s.displayProjectName(rawProject, conversationName)
 		key := hostID + "\x00" + project
 		group := groups[key]
 		if group == nil {
@@ -355,9 +356,9 @@ func (s *server) projectTotalsBetween(since, until time.Time, costs map[string]p
 func (s *server) activeSessionCount(now time.Time) int {
 	var active int
 	cutoff := now.Add(-5 * time.Minute).Format(time.RFC3339Nano)
-	_ = s.db.QueryRow(`SELECT COUNT(*) FROM (
-		SELECT s.host_id,COALESCE(NULLIF(s.parent_conversation_id,''),s.conversation_id) root_id
-		FROM sessions s JOIN agents a ON a.host_id=s.host_id
+	_ = s.db.QueryRow(`WITH `+sessionParentsCTE+` SELECT COUNT(*) FROM (
+		SELECT s.host_id,COALESCE(NULLIF(s.display_parent_id,''),s.conversation_id) root_id
+		FROM resolved_sessions s JOIN agents a ON a.host_id=s.host_id
 		WHERE a.revoked_at IS NULL AND s.last_event_at>=?
 		GROUP BY s.host_id,root_id
 	)`, cutoff).Scan(&active)

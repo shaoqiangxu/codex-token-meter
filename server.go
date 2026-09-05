@@ -219,6 +219,16 @@ func (s *server) ingestAllowed(host string) bool {
 }
 
 func (s *server) applyEvent(tx *sql.Tx, e UsageEvent) error {
+	// Old agents may retain a message ID in a checkpoint. Keep those records
+	// under their source task even before an exact-usage event is available.
+	if e.ParentConversationID == "" && legacyMessageID(e.ConversationID) && nativeTaskID(e.SourceFileID) {
+		if err := tx.QueryRow(`SELECT COALESCE(
+			NULLIF((SELECT parent_conversation_id FROM sessions WHERE host_id=? AND conversation_id=?),''),
+			(SELECT conversation_id FROM sessions WHERE host_id=? AND conversation_id=?),'')`,
+			e.HostID, e.ConversationID, e.HostID, e.SourceFileID).Scan(&e.ParentConversationID); err != nil {
+			return err
+		}
+	}
 	if e.ParentConversationID == "" && (strings.HasPrefix(e.ConversationID, "ctco_") || strings.HasPrefix(e.ConversationID, "fco_")) && e.SourceFileID != "" && e.SourceFileID != e.ConversationID {
 		e.ParentConversationID = e.SourceFileID
 	}

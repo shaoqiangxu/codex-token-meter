@@ -14,7 +14,10 @@
   "admin_password_hash": "$argon2id$...",
   "session_secret": "replace-with-a-long-random-secret",
   "public_url": "https://meter.example.com",
-  "artifact_dir": "/opt/codex-token-meter/dist"
+  "artifact_dir": "/opt/codex-token-meter/dist",
+  "project_aliases": {
+    "example-project": "Example Project"
+  }
 }
 ```
 
@@ -26,6 +29,8 @@ openssl rand -hex 32
 ```
 
 `listen` 只能使用 `127.0.0.1`、`localhost` 或 `::1`。请通过 Cloudflare Tunnel、反向代理或私有网络入口提供 TLS，不要直接将应用端口暴露到公网。
+
+`project_aliases` 可省略。只有确认是同一个项目时，才将旧名称或仓库目录名映射到统一显示名；匹配区分大小写，服务重启后生效。它只统一项目展示名称，不合并两个真实任务、不跨设备聚合，也不修改原始用量和历史价格。不要为名称相似但实际不同的项目设置同一别名。
 
 ## Agent
 
