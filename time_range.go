@@ -1,8 +1,6 @@
 package main
 
 import (
-	"compress/gzip"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -16,6 +14,7 @@ var dashboardLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 type dashboardRange struct {
 	Period     string
 	Start, End time.Time
+	OpenEnded  bool
 }
 
 func resolveDashboardRange(q url.Values, now time.Time) (dashboardRange, error) {
@@ -33,6 +32,7 @@ func resolveDashboardRange(q url.Values, now time.Time) (dashboardRange, error) 
 			return r, fmt.Errorf("请选择有效的开始时间")
 		}
 		r.Period, r.Start = "custom", from.UTC().Truncate(time.Second)
+		r.OpenEnded = q.Get("to") == ""
 		if raw := q.Get("to"); raw != "" {
 			end, err := time.Parse(time.RFC3339, raw)
 			if err != nil {
@@ -71,7 +71,7 @@ func resolveDashboardRange(q url.Values, now time.Time) (dashboardRange, error) 
 // and exclude both at the end. A trailing Z incorrectly sorts after '.'.
 func rangeBound(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05") }
 
-func (s *server) snapshotForRange(r dashboardRange) any {
+func (s *server) buildSnapshotForRange(r dashboardRange) any {
 	v := s.snapshotBetween(r.Start, r.End).(map[string]any)
 	v["period"] = r.Period
 	v["timezone"] = "Asia/Shanghai"
@@ -90,8 +90,11 @@ func (s *server) serveSnapshot(w http.ResponseWriter, r *http.Request) {
 	if r.Context().Err() != nil {
 		return
 	}
-	v := s.snapshotForRange(rng)
-	if _, failed := v.(map[string]any)["error"]; failed {
+	entry, err := s.cachedSnapshot(r.Context(), rng)
+	if r.Context().Err() != nil {
+		return
+	}
+	if err != nil {
 		http.Error(w, "数据暂不可用，请稍后重试", http.StatusServiceUnavailable)
 		return
 	}
@@ -99,12 +102,10 @@ func (s *server) serveSnapshot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Vary", "Accept-Encoding")
 	if acceptsGzip(r.Header.Get("Accept-Encoding")) {
 		w.Header().Set("Content-Encoding", "gzip")
-		z, _ := gzip.NewWriterLevel(w, gzip.BestSpeed)
-		defer z.Close()
-		_ = json.NewEncoder(z).Encode(v)
+		_, _ = w.Write(entry.Gzip)
 		return
 	}
-	_ = json.NewEncoder(w).Encode(v)
+	_, _ = w.Write(entry.Body)
 }
 
 func acceptsGzip(header string) bool {

@@ -3,6 +3,13 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use semantic versioning.
 
+## [0.1.3] - 2026-09-05
+
+### Fixed
+
+- Coalesce dashboard aggregation across concurrent browsers and legacy clients, not just within one page. Share pre-encoded JSON/gzip for one second, with a bounded eight-range cache and distinct calendar/custom keys.
+- Keep cancelled requests from entering aggregation and prevent reconnect traffic from exhausting the SQLite connection pool with duplicate work.
+
 ## [0.1.2] - 2026-09-05
 
 ### Fixed
@@ -40,6 +47,7 @@ Existing Windows and Linux agents remain compatible; this dashboard/server updat
 - Keep response-item IDs (`msg_*`, `ctc_*`, `ctco_*`) separate from the owning Codex task ID so tool calls cannot create fake sessions.
 - Detect cumulative Token counter restarts inside an append-only rollout file and begin a new source epoch without losing usage.
 
+[0.1.3]: https://github.com/shaoqiangxu/codex-token-meter/releases/tag/v0.1.3
 [0.1.2]: https://github.com/shaoqiangxu/codex-token-meter/releases/tag/v0.1.2
 [0.1.1]: https://github.com/shaoqiangxu/codex-token-meter/releases/tag/v0.1.1
 [0.1.0]: https://github.com/shaoqiangxu/codex-token-meter/releases/tag/v0.1.0
