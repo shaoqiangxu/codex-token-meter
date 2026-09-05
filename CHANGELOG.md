@@ -3,6 +3,19 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use semantic versioning.
 
+## [0.1.7] - 2026-09-05
+
+### Fixed
+
+- Wake new and quiet JSONL files through bounded filesystem notifications; retain running files in the active tail set across silence and restarts. Keep periodic discovery as a fallback.
+- Recover from observed compaction records larger than the former 8MiB line cap. Read bounded chunks up to 64MiB, preserve atomic spool/checkpoint commits, and report the source ID and blocked offset instead of silently skipping usage.
+- Send started/completed task evidence independently of historical usage and pricing. Started-only tasks appear as unsettled; completion does not wait for final usage.
+- Pin coherent SQLite WAL read snapshots without holding the ingest lock during history queries. Cache immutable per-event historical prices and re-query absolute totals for changed conversations during numeric updates.
+- Include already-readable fractional-second usage immediately in live ranges; preserve second-precision custom filters and historical timestamps.
+- Report process build/PID/start time, oldest queue age, retry status and redacted scan errors. Add bounded event-ID delivery traces, real-data-copy profiling and source-to-browser regression coverage.
+
+Existing device identity, credentials, baseline and spool must be retained during the in-place Agent upgrade. Monitoring still makes no model calls. No new numeric animation or visual redesign is included.
+
 ## [0.1.5] - 2026-09-05
 
 ### Fixed

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,16 @@ func TestSilentRunningFileRemainsHot(t *testing.T) {
 	cfg := &AgentConfig{HostID: "h", CodexHomes: []string{home}}
 	if err = scanScheduled(db, cfg); err != nil {
 		t.Fatal(err)
+	}
+	if seconds, _ := strconv.Atoi(os.Getenv("METER_QUIET_SECONDS")); seconds > 0 {
+		start := time.Now()
+		for time.Since(start) < time.Duration(seconds)*time.Second {
+			if err = scanScheduled(db, cfg); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+		t.Logf("actual_silence_seconds=%.3f", time.Since(start).Seconds())
 	}
 	// Advance only the scheduler's mtime age. No artificial usage timestamps or
 	// model requests; the regression must work even if notifications are absent.
@@ -116,5 +127,46 @@ func TestSourceNotificationWakesNewAndColdFiles(t *testing.T) {
 		case <-timer.C:
 			t.Fatal("new file not notified")
 		}
+	}
+}
+
+func TestOversizedRecordReportsBlockWithoutSkippingUsage(t *testing.T) {
+	dir := t.TempDir()
+	db, _ := openSQLite(filepath.Join(dir, "agent.db"))
+	defer db.Close()
+	migrateAgent(db)
+	path := filepath.Join(dir, "oversized.jsonl")
+	os.WriteFile(path, nil, 0600)
+	cfg := &AgentConfig{HostID: "h"}
+	if err := scanOne(db, cfg, path, false, false); err != nil {
+		t.Fatal(err)
+	}
+	prefix := `{"type":"event_msg","payload":{"type":"task_started"}}` + "\n"
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(prefix + `{"type":"compacted","payload":{"message":"`)
+	chunk := strings.Repeat("x", 64*1024)
+	for i := 0; i < 1024; i++ {
+		if _, err = f.WriteString(chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.WriteString(`"}}` + "\n")
+	f.Close()
+	err = scanOne(db, cfg, path, false, false)
+	if err == nil {
+		t.Fatal("oversized line silently passed")
+	}
+	message := safeScanError(err)
+	if !strings.Contains(message, "source_id="+sourceIdentity(path)) || !strings.Contains(message, "offset="+strconv.Itoa(len(prefix))) || strings.Contains(message, dir) {
+		t.Fatalf("unsafe/unactionable scan error: %s", message)
+	}
+	var offset, n int64
+	db.QueryRow("SELECT offset FROM files").Scan(&offset)
+	db.QueryRow("SELECT COUNT(*) FROM spool").Scan(&n)
+	if offset != 0 || n != 0 {
+		t.Fatal("failed transaction advanced checkpoint or partially queued events")
 	}
 }

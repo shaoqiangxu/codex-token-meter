@@ -100,7 +100,7 @@ func fetchUSDCNY(ctx context.Context, endpoint string) (string, float64, error) 
 func (s *server) latestExchangeRate() exchangeRateView {
 	var view exchangeRateView
 	var stale int
-	err := s.db.QueryRow(`SELECT base_currency,quote_currency,rate,rate_date,source_name,fetched_at,stale
+	err := s.reader().QueryRow(`SELECT base_currency,quote_currency,rate,rate_date,source_name,fetched_at,stale
 		FROM exchange_rates WHERE base_currency='USD' AND quote_currency='CNY'`).Scan(
 		&view.Base, &view.Quote, &view.Rate, &view.RateDate, &view.Source, &view.FetchedAt, &stale)
 	if err != nil {

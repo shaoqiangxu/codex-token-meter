@@ -341,8 +341,12 @@ func testServerDB(t *testing.T) (*server, func()) {
 		t.Fatal(e)
 	}
 	db.Exec("INSERT INTO agents(host_id,alias,token_hash,created_at)VALUES('h','host','x',?)", time.Now().UTC().Format(time.RFC3339))
-	s := &server{db: db, hub: newHub()}
-	return s, func() { db.Close() }
+	readPool, e := openSQLite(filepath.Join(d, "meter.db"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	s := &server{db: db, readPool: readPool, accounting: &accountingCache{}, hub: newHub()}
+	return s, func() { readPool.Close(); db.Close() }
 }
 
 func TestServerDedupParentPrefixLiveReconcile(t *testing.T) {

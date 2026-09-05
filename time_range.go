@@ -18,8 +18,10 @@ type dashboardRange struct {
 }
 
 func resolveDashboardRange(q url.Values, now time.Time) (dashboardRange, error) {
-	// Filters have second precision, including calendar and rolling boundaries.
-	now = now.UTC().Truncate(time.Second)
+	// User-entered filters remain second-precision. Live ranges end NOW, not at
+	// the previous whole second: a readable fractional-second usage must not
+	// wait for the next window timer merely because its timestamp was rounded.
+	now = now.UTC()
 	period := q.Get("period")
 	if period == "" {
 		period = "today"
@@ -71,20 +73,39 @@ func resolveDashboardRange(q url.Values, now time.Time) (dashboardRange, error) 
 // and exclude both at the end. A trailing Z incorrectly sorts after '.'.
 func rangeBound(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05") }
 
+// Normalize for comparison only, without rewriting historical timestamps.
+// RFC3339's trailing Z sorts after fractional seconds; pad to fixed nanoseconds.
+const usageClock = `(substr(timestamp,1,19)||'.'||substr(CASE WHEN substr(timestamp,20,1)='.' THEN substr(timestamp,21,length(timestamp)-21) ELSE '' END||'000000000',1,9))`
+const usageWindow = usageClock + ">=? AND " + usageClock + "<?"
+
+func usageBound(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000000000") }
+
 func (s *server) buildSnapshotForRange(r dashboardRange) any {
+	return s.buildSnapshot(r, nil)
+}
+func (s *server) buildSnapshot(r dashboardRange, previous map[string]any) any {
 	started := time.Now()
-	s.viewMu.RLock()
-	defer s.viewMu.RUnlock()
-	v := s.snapshotBetween(r.Start, r.End).(map[string]any)
+	view, closeView, err := s.snapshotReader()
+	if err != nil {
+		return map[string]any{"error": "database unavailable"}
+	}
+	defer closeView()
+	if previous != nil {
+		view.prepareIncremental(r, previous)
+	}
+	v := view.snapshotBetween(r.Start, r.End).(map[string]any)
 	var firstEvent string
-	_ = s.db.QueryRow("SELECT timestamp FROM usage_events ORDER BY timestamp LIMIT 1").Scan(&firstEvent)
+	_ = view.reader().QueryRow("SELECT timestamp FROM usage_events ORDER BY timestamp LIMIT 1").Scan(&firstEvent)
 	v["data_start"] = firstEvent
 	v["period"] = r.Period
 	v["timezone"] = "Asia/Shanghai"
 	v["timezone_label"] = "北京时间 UTC+8"
 	v["range_end"] = r.End
-	v["runtime"] = s.runtimeViews()
-	s.attachWatermark(v, r.cacheKey(), started)
+	v["runtime"] = view.runtimeViews()
+	s.hub.mu.Lock()
+	v["runtime_revision"] = s.hub.taskSeq
+	s.hub.mu.Unlock()
+	view.attachWatermark(v, r.cacheKey(), started)
 	return v
 }
 

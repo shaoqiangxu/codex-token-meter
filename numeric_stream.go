@@ -128,7 +128,7 @@ func (s *server) numericMessage(query url.Values) *sseMessage {
 		data, _ := json.Marshal(map[string]any{"query_key": r.cacheKey(), "server_epoch": s.hub.epoch, "reason": "missing_base"})
 		return &sseMessage{Event: "resync", Data: data}
 	}
-	next := s.buildSnapshotForRange(r).(map[string]any)
+	next := s.buildSnapshot(r, previous.value).(map[string]any)
 	if next["error"] != nil {
 		return &sseMessage{Event: "resync", Data: []byte(`{"reason":"database_unavailable"}`)}
 	}
@@ -177,13 +177,13 @@ func (s *server) numericWindowDue() bool {
 		}
 		var changed bool
 		if r.Start.After(oldStart) {
-			_ = s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM usage_events WHERE timestamp>=? AND timestamp<?)", rangeBound(oldStart), rangeBound(r.Start)).Scan(&changed)
+			_ = s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM usage_events WHERE "+usageWindow+")", usageBound(oldStart), usageBound(r.Start)).Scan(&changed)
 			if changed {
 				return true
 			}
 		}
 		if r.End.After(oldEnd) {
-			_ = s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM usage_events WHERE timestamp>=? AND timestamp<?)", rangeBound(oldEnd), rangeBound(r.End)).Scan(&changed)
+			_ = s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM usage_events WHERE "+usageWindow+")", usageBound(oldEnd), usageBound(r.End)).Scan(&changed)
 			if changed {
 				return true
 			}

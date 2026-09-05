@@ -137,6 +137,9 @@ CREATE TABLE IF NOT EXISTS audit_log (
 	if _, err := db.Exec(schema); err != nil {
 		return err
 	}
+	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS usage_clock ON usage_events(" + usageClock + ")"); err != nil {
+		return err
+	}
 	if err := seedPrices(db); err != nil {
 		return err
 	}

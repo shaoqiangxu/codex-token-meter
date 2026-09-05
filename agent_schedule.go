@@ -125,7 +125,7 @@ func observeScan(cfg *AgentConfig, started time.Time, err error) {
 	}
 }
 
-func observeUpload(cfg *AgentConfig, started time.Time, success bool) {
+func observeUpload(cfg *AgentConfig, started time.Time, success bool, code ...string) {
 	if cfg.health == nil {
 		return
 	}
@@ -133,6 +133,13 @@ func observeUpload(cfg *AgentConfig, started time.Time, success bool) {
 	defer cfg.health.Unlock()
 	cfg.health.value.UploadMS = float64(time.Since(started).Microseconds()) / 1000
 	cfg.health.value.UploadFailed = !success
+	cfg.health.value.UploadError = ""
+	if !success {
+		cfg.health.value.UploadError = "network_or_ack_failure"
+		if len(code) > 0 {
+			cfg.health.value.UploadError = code[0]
+		}
+	}
 	if success {
 		cfg.health.value.LastUploadAt = time.Now().UTC()
 	}

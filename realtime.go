@@ -56,6 +56,7 @@ type AgentTelemetry struct {
 	ScanAgeMS        int64     `json:"scan_age_ms"`
 	ScanFailed       bool      `json:"scan_failed"`
 	UploadFailed     bool      `json:"upload_failed"`
+	UploadError      string    `json:"upload_error,omitempty"`
 	ActiveFiles      int       `json:"active_files"`
 }
 
@@ -65,17 +66,23 @@ type agentHealth struct {
 }
 
 func (s *server) watermark() map[string]any {
+	if s.pinnedWatermark != nil {
+		return s.pinnedWatermark
+	}
 	var ledger int64
 	var last string
 	_ = s.db.QueryRow("SELECT ledger_revision,last_ledger_at FROM realtime_state WHERE id=1").Scan(&ledger, &last)
 	s.hub.mu.Lock()
-	revision, epoch, sent := s.hub.seq, s.hub.epoch, s.hub.lastSent
+	revision, epoch, sent, full := s.hub.seq, s.hub.epoch, s.hub.lastSent, s.hub.fullSeq
 	s.hub.mu.Unlock()
-	return map[string]any{"server_epoch": epoch, "revision": revision, "ledger_revision": ledger, "last_ledger_at": last, "server_time": time.Now().UTC(), "sse_last_sent_at": sent}
+	return map[string]any{"server_epoch": epoch, "revision": revision, "full_revision": full, "ledger_revision": ledger, "last_ledger_at": last, "server_time": time.Now().UTC(), "sse_last_sent_at": sent}
 }
 
 func (s *server) heartbeat() any {
 	m := s.watermark()
+	s.hub.mu.Lock()
+	m["runtime_revision"] = s.hub.taskSeq
+	s.hub.mu.Unlock()
 	m["hosts"] = s.hostViews()
 	m["runtime"] = s.runtimeViews()
 	m["delivery_trace"] = s.traces.recent()

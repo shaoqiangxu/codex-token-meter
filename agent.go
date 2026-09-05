@@ -496,7 +496,7 @@ func flushSpool(ctx context.Context, db *sql.DB, cfg *AgentConfig) error {
 		ackErr := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&acknowledgement)
 		resp.Body.Close()
 		if resp.StatusCode/100 != 2 {
-			observeUpload(cfg, started, false)
+			observeUpload(cfg, started, false, fmt.Sprintf("http_%d", resp.StatusCode))
 			return fmt.Errorf("ingest HTTP %d", resp.StatusCode)
 		}
 		if ackErr != nil || acknowledgement.Accepted != len(batch.Events) {
