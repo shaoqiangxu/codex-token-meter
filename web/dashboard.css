@@ -1,4 +1,9 @@
 .session-groups{padding:14px;display:grid;gap:14px}
+.sync-panel{margin-top:12px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--panel);font-size:12px;overflow-wrap:anywhere;line-height:1.8}
+.sync-panel details,.device-health{color:var(--muted);font-size:11px}.sync-panel summary{cursor:pointer}.device-health{padding:8px 12px;line-height:1.8;overflow-wrap:anywhere}
+#confirmedChange{color:#8ed8ff;font-variant-numeric:tabular-nums}#dataStatus{color:var(--muted)}
+.confirmed-change{box-shadow:inset 0 0 0 2px rgba(54,214,200,var(--confirmed-glow,0));background-color:rgba(54,214,200,calc(var(--confirmed-glow,0)*.08))}
+@media(prefers-reduced-motion:reduce){.confirmed-change{box-shadow:none;background-color:transparent}}
 .device-group,.project-group,.child-records{border:1px solid var(--line);border-radius:12px;background:#0d1829}
 .device-group>summary,.project-group>summary,.child-records>summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:10px}
 .device-group>summary::-webkit-details-marker,.project-group>summary::-webkit-details-marker,.child-records>summary::-webkit-details-marker{display:none}

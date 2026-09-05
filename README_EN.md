@@ -22,7 +22,7 @@ The monitor **does not invoke an LLM API and does not consume tokens itself**. O
 - Stable event IDs, response/turn deduplication, archive-move handling, and parent/child task aggregation.
 - Local SQLite checkpoints and an offline spool on every agent.
 - SQLite WAL on the central server with online backups and retention.
-- Lightweight SSE change notifications, coalesced range requests, a 15-second REST fallback, and in-place patches preserving expanded rows and selections.
+- Absolute SSE numeric updates, 200ms coalescing, independent 5-second application heartbeats, and a REST fallback only when the stream is unhealthy. Exact integers update in place while preserving expanded rows and selections. Collector scanning, uploading and heartbeats run independently; see [realtime behavior and measurements](docs/REALTIME.md).
 - Explicit Beijing time (UTC+8) calendar ranges, rolling last-24-hours, validated custom ranges, and cancellation of obsolete requests.
 - Mobile cards with stacked input/output values, labeled date inputs, and lazily rendered raw records.
 - Project/repository and explicit Codex task-name metadata without reading conversation previews.

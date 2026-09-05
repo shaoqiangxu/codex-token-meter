@@ -366,7 +366,7 @@ func (s *server) activeSessionCount(now time.Time) int {
 }
 
 func (s *server) hostViews() []map[string]any {
-	rows, err := s.db.Query("SELECT host_id,alias,COALESCE(platform,''),COALESCE(last_seen,'') FROM agents WHERE revoked_at IS NULL ORDER BY platform,alias")
+	rows, err := s.db.Query("SELECT a.host_id,a.alias,COALESCE(a.platform,''),COALESCE(a.last_seen,''),COALESCE(t.report,''),COALESCE(t.received_at,'') FROM agents a LEFT JOIN agent_telemetry t ON t.host_id=a.host_id WHERE a.revoked_at IS NULL ORDER BY a.platform,a.alias")
 	if err != nil {
 		return nil
 	}
@@ -374,10 +374,34 @@ func (s *server) hostViews() []map[string]any {
 	result := []map[string]any{}
 	for rows.Next() {
 		var id, alias, platform, lastSeen string
-		if rows.Scan(&id, &alias, &platform, &lastSeen) != nil {
+		var report []byte
+		var received string
+		if rows.Scan(&id, &alias, &platform, &lastSeen, &report, &received) != nil {
 			continue
 		}
-		result = append(result, map[string]any{"host_id": id, "alias": alias, "platform": platform, "last_seen": lastSeen, "online": time.Since(parseTime(lastSeen)) < 15*time.Second})
+		age := time.Since(parseTime(lastSeen)).Milliseconds()
+		connection := "online"
+		cfg := s.cfg.Realtime.normalized()
+		if age > int64(cfg.OfflineMS) {
+			connection = "offline"
+		} else if age > int64(cfg.DelayedMS) {
+			connection = "delayed"
+		}
+		telemetry := decodeTelemetry(report)
+		syncState := "unknown"
+		if telemetry != nil {
+			if telemetry.ScanAgeMS >= 0 {
+				telemetry.ScanAgeMS += max(0, time.Since(parseTime(received)).Milliseconds())
+			}
+			syncState = "synced"
+			if telemetry.PendingEvents > 0 || telemetry.UploadFailed {
+				syncState = "pending"
+			}
+			if telemetry.ScanFailed || telemetry.ScanAgeMS < 0 || telemetry.ScanAgeMS > int64(cfg.DelayedMS) {
+				syncState = "stale"
+			}
+		}
+		result = append(result, map[string]any{"host_id": id, "alias": alias, "platform": platform, "last_seen": lastSeen, "online": age < 15000, "connection_state": connection, "sync_state": syncState, "telemetry": telemetry, "telemetry_received_at": received, "last_seen_age_ms": age})
 	}
 	return result
 }

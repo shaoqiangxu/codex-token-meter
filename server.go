@@ -7,6 +7,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -30,6 +31,8 @@ type server struct {
 	ingestMu    sync.Mutex
 	ingestTimes map[string][]time.Time
 	snapshots   snapshotCache
+	viewMu      sync.RWMutex
+	numeric     numericViews
 }
 
 func runServer(ctx context.Context, configPath string) error {
@@ -53,6 +56,12 @@ func runServer(ctx context.Context, configPath string) error {
 		return err
 	}
 	s := &server{cfg: cfg, db: db, hub: newHub(), login: map[string][]time.Time{}, ingestTimes: map[string][]time.Time{}}
+	s.hub.interval = time.Duration(cfg.Realtime.normalized().CoalesceMS) * time.Millisecond
+	s.hub.heartbeatInterval = time.Duration(cfg.Realtime.normalized().HeartbeatMS) * time.Millisecond
+	s.hub.pulse = s.heartbeat
+	s.hub.notification = func() any { return s.watermark() }
+	s.hub.numbers = s.numericMessage
+	s.hub.windowDue = s.numericWindowDue
 	go s.hub.run(ctx, s.snapshot)
 	go s.vercelPriceLoop(ctx)
 	go s.openAIPriceLoop(ctx)
@@ -76,6 +85,7 @@ func runServer(ctx context.Context, configPath string) error {
 	mux.HandleFunc("/downloads/", s.download)
 	mux.HandleFunc("/events", s.requireAuth(func(w http.ResponseWriter, r *http.Request) { s.hub.serve(w, r, s.snapshot) }))
 	mux.HandleFunc("/api/snapshot", s.requireAuth(s.serveSnapshot))
+	mux.HandleFunc("/api/realtime", s.requireAuth(s.realtimeProbe))
 	mux.HandleFunc("/api/enrollments", s.requireAuth(s.csrf(s.createEnrollment)))
 	mux.HandleFunc("/api/purchases", s.requireAuth(s.purchaseAPI))
 	mux.HandleFunc("/api/sessions/", s.requireAuth(s.sessionAPI))
@@ -114,6 +124,7 @@ func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) ingest(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
 	if r.Method != "POST" {
 		http.Error(w, "method", 405)
 		return
@@ -135,17 +146,26 @@ func (s *server) ingest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "rate limited", http.StatusTooManyRequests)
 		return
 	}
+	s.viewMu.Lock()
+	defer s.viewMu.Unlock()
 	tx, err := s.db.Begin()
 	if err != nil {
 		http.Error(w, "db", 500)
 		return
 	}
 	defer tx.Rollback()
+	changed := false
 	for _, e := range b.Events {
 		if e.HostID != b.HostID || !validUsageEvent(e) {
 			http.Error(w, "host mismatch", 403)
 			return
 		}
+		var exists bool
+		if err = tx.QueryRow("SELECT EXISTS(SELECT 1 FROM ingested_events WHERE event_id=?)", e.EventID).Scan(&exists); err != nil {
+			http.Error(w, "db", 500)
+			return
+		}
+		changed = changed || !exists
 		if err = s.applyEvent(tx, e); err != nil {
 			http.Error(w, "ingest failed", 500)
 			return
@@ -158,11 +178,31 @@ func (s *server) ingest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_, _ = tx.Exec("UPDATE agents SET last_seen=? WHERE host_id=?", time.Now().UTC().Format(time.RFC3339Nano), b.HostID)
+	if b.Telemetry != nil {
+		var old []byte
+		_ = tx.QueryRow("SELECT report FROM agent_telemetry WHERE host_id=?", b.HostID).Scan(&old)
+		previous := decodeTelemetry(old)
+		if previous == nil || previous.AgentEpoch != b.Telemetry.AgentEpoch || previous.ReportSeq < b.Telemetry.ReportSeq {
+			report, _ := json.Marshal(b.Telemetry)
+			if _, err = tx.Exec("INSERT INTO agent_telemetry(host_id,report,received_at)VALUES(?,?,?) ON CONFLICT(host_id) DO UPDATE SET report=excluded.report,received_at=excluded.received_at", b.HostID, report, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+				http.Error(w, "telemetry", 500)
+				return
+			}
+		}
+	}
+	if _, err = tx.Exec(`UPDATE realtime_state SET last_ledger_at=CASE WHEN ledger_revision<(SELECT COALESCE(MAX(id),0) FROM usage_events) THEN ? ELSE last_ledger_at END,ledger_revision=(SELECT COALESCE(MAX(id),0) FROM usage_events) WHERE id=1`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		http.Error(w, "db", 500)
+		return
+	}
 	if err = tx.Commit(); err != nil {
 		http.Error(w, "db", 500)
 		return
 	}
-	s.hub.mark()
+	// Heartbeats update freshness, not history; replays do not advance data.
+	if changed || len(b.Metadata) > 0 {
+		s.hub.mark()
+	}
+	w.Header().Set("Server-Timing", fmt.Sprintf("ingest;dur=%.3f", float64(time.Since(started).Microseconds())/1000))
 	writeJSON(w, map[string]any{"accepted": len(b.Events), "metadata_accepted": len(b.Metadata)})
 }
 
@@ -188,6 +228,10 @@ func validUsageEvent(e UsageEvent) bool {
 	}
 	switch e.EventType {
 	case "baseline", "exact_usage", "live_estimate", "activity":
+	case "runtime":
+		if e.RunState != "running" && e.RunState != "idle" {
+			return false
+		}
 	default:
 		return false
 	}
@@ -239,6 +283,9 @@ func (s *server) applyEvent(tx *sql.Tx, e UsageEvent) error {
 	inserted, _ := seen.RowsAffected()
 	if inserted == 0 {
 		return nil
+	}
+	if err := applyRuntime(tx, e); err != nil {
+		return err
 	}
 	if e.EventType == "baseline" {
 		_, err := tx.Exec(`INSERT INTO conversation_counters(host_id,conversation_id,input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,total_tokens,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(host_id,conversation_id) DO UPDATE SET input_tokens=excluded.input_tokens,cached_input_tokens=excluded.cached_input_tokens,cache_write_input_tokens=excluded.cache_write_input_tokens,output_tokens=excluded.output_tokens,reasoning_output_tokens=excluded.reasoning_output_tokens,total_tokens=excluded.total_tokens,updated_at=excluded.updated_at`, e.HostID, e.ConversationID, e.Counts.InputTokens, e.Counts.CachedInputTokens, e.Counts.CacheWriteInputTokens, e.Counts.OutputTokens, e.Counts.ReasoningOutputTokens, e.Counts.TotalTokens, e.Timestamp.Format(time.RFC3339Nano))

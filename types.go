@@ -1,6 +1,9 @@
 package main
 
-import "time"
+import (
+	"database/sql"
+	"time"
+)
 
 const parserVersion = "codex-jsonl-v2"
 
@@ -35,6 +38,7 @@ type UsageEvent struct {
 	DataQuality          string      `json:"data_quality"`
 	ParserVersion        string      `json:"parser_version"`
 	LiveEstimate         int64       `json:"live_estimate,omitempty"`
+	RunState             string      `json:"runtime_state,omitempty"`
 }
 
 // SessionMetadata contains display-only identifiers. The agent intentionally
@@ -47,9 +51,10 @@ type SessionMetadata struct {
 }
 
 type IngestBatch struct {
-	HostID   string            `json:"host_id"`
-	Events   []UsageEvent      `json:"events"`
-	Metadata []SessionMetadata `json:"metadata,omitempty"`
+	HostID    string            `json:"host_id"`
+	Events    []UsageEvent      `json:"events"`
+	Metadata  []SessionMetadata `json:"metadata,omitempty"`
+	Telemetry *AgentTelemetry   `json:"telemetry,omitempty"`
 }
 
 type AgentConfig struct {
@@ -64,6 +69,9 @@ type AgentConfig struct {
 	seen                map[string]fileStamp
 	metadataSent        map[string]string
 	lastMetadataScan    time.Time
+	health              *agentHealth
+	localDB             *sql.DB
+	scheduler           *scanScheduler
 }
 
 type fileStamp struct {
@@ -80,4 +88,5 @@ type ServerConfig struct {
 	PublicURL         string            `json:"public_url"`
 	ArtifactDir       string            `json:"artifact_dir"`
 	ProjectAliases    map[string]string `json:"project_aliases,omitempty"`
+	Realtime          RealtimeConfig    `json:"realtime,omitempty"`
 }

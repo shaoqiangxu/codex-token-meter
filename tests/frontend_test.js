@@ -2,8 +2,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const {token, tokenM, groupedSessions, dashboardCards, sessionMetricValues, viewStructure, updateText} = require('../web/app.js');
 
-assert.equal(token(1234500), '1.2345M');
-assert.equal(token(999999), '999999');
+assert.equal(token(1234500), '1,234,500');
+assert.equal(token(999999), '999,999');
 assert.equal(tokenM(0), '0.0000M');
 
 const cards = dashboardCards({
@@ -19,16 +19,16 @@ const cards = dashboardCards({
   sessions: [{status: 'STALE', data_quality: 'LOWER_BOUND', last_event_at: new Date().toISOString()}],
   exchange_rate: {}
 });
-assert.equal(cards.find(item => item.key === 'exact').value, '1.2345M');
-assert.equal(cards.find(item => item.key === 'io').value, '1.2000M/0.0345M');
+assert.equal(cards.find(item => item.key === 'exact').value, '1,234,500');
+assert.equal(cards.find(item => item.key === 'io').value, '1,200,000/34,500');
 assert.match(cards.find(item => item.key === 'cache').note, /明确上报写入为0/);
-assert.equal(cards.find(item => item.key === 'generating').value, '日志不可估算');
+assert.equal(cards.find(item => item.key === 'generating').value, '状态未知');
 
 const baseRows = [{host_id: 'h', conversation_id: 'child', parent_conversation_id: 'root', project: 'project', name: 'task', total_tokens: 10}];
 const changedRows = [...baseRows, {host_id: 'h', conversation_id: 'child-2', parent_conversation_id: 'root', project: 'project', name: 'task', total_tokens: 20}];
 const baseGroup = groupedSessions(baseRows)[0];
 const changedGroup = groupedSessions(changedRows)[0];
-assert.equal(sessionMetricValues(baseGroup).total.value, '0.0000M');
+assert.equal(sessionMetricValues(baseGroup).total.value, '10');
 assert.equal(sessionMetricValues(baseGroup).cache_write.note, '日志明确上报0');
 const hosts = [{host_id: 'h'}];
 assert.equal(viewStructure({query: '', hosts, groups: [baseGroup]}), viewStructure({query: '', hosts, groups: [changedGroup]}), 'numeric and internal-record updates must not rebuild the page structure');

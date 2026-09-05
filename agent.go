@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -57,28 +58,67 @@ func runAgent(ctx context.Context, configPath string, once, backfill bool) error
 			return err
 		}
 	}
-	lastHeartbeat := time.Time{}
-	scan := func() error {
-		if err := scanCodexFiles(db, &cfg, backfill); err != nil {
+	epoch, err := randomToken(12)
+	if err != nil {
+		return err
+	}
+	cfg.localDB = db
+	cfg.health = &agentHealth{value: AgentTelemetry{AgentEpoch: epoch, AgentVersion: version}}
+	var lastUsage string
+	_ = db.QueryRow("SELECT value FROM meta WHERE key='last_usage_at'").Scan(&lastUsage)
+	cfg.health.value.LastUsageAt = parseTime(lastUsage)
+	var lastUpload string
+	_ = db.QueryRow("SELECT value FROM meta WHERE key='last_upload_at'").Scan(&lastUpload)
+	cfg.health.value.LastUploadAt = parseTime(lastUpload)
+	if once {
+		started := time.Now()
+		err := scanCodexFiles(db, &cfg, backfill)
+		observeScan(&cfg, started, err)
+		if err != nil {
 			return err
 		}
 		if err := flushSpool(ctx, db, &cfg); err != nil {
 			return err
 		}
-		if time.Since(lastHeartbeat) >= 5*time.Second {
-			if err := sendHeartbeat(ctx, &cfg); err != nil {
-				return err
+		return sendHeartbeat(ctx, &cfg)
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	uploadWake, healthWake := make(chan struct{}, 1), make(chan struct{}, 1)
+	var workers sync.WaitGroup
+	workers.Add(2)
+	go func() {
+		defer workers.Done()
+		agentNetworkLoop(ctx, uploadWake, time.Second, 0, func() error {
+			cfg.health.Lock()
+			before := cfg.health.value.LastUploadAt
+			cfg.health.Unlock()
+			err := flushSpool(ctx, db, &cfg)
+			cfg.health.Lock()
+			changed := cfg.health.value.LastUploadAt != before
+			cfg.health.Unlock()
+			if changed {
+				wakeAgent(healthWake)
 			}
-			lastHeartbeat = time.Now()
+			return err
+		})
+	}()
+	go func() {
+		defer workers.Done()
+		agentNetworkLoop(ctx, healthWake, 4*time.Second, time.Second, func() error { return sendHeartbeat(ctx, &cfg) })
+	}()
+	defer func() { cancel(); workers.Wait() }()
+	var lastScanError time.Time
+	scan := func() {
+		started := time.Now()
+		err := scanScheduled(db, &cfg)
+		observeScan(&cfg, started, err)
+		wakeAgent(uploadWake)
+		if err != nil && time.Since(lastScanError) >= 30*time.Second {
+			logSafe("agent scan deferred (checkpoint retained)")
+			lastScanError = time.Now()
 		}
-		return nil
 	}
-	if err := scan(); err != nil && once {
-		return err
-	}
-	if once {
-		return nil
-	}
+	scan()
 	t := time.NewTicker(250 * time.Millisecond)
 	defer t.Stop()
 	for {
@@ -86,16 +126,14 @@ func runAgent(ctx context.Context, configPath string, once, backfill bool) error
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
-			if err := scan(); err != nil {
-				logSafe("agent scan/upload deferred: %v", err)
-			}
+			scan()
 		}
 	}
 }
 
 func sendHeartbeat(ctx context.Context, cfg *AgentConfig) error {
 	metadata := pendingSessionMetadata(cfg)
-	body, _ := json.Marshal(IngestBatch{HostID: cfg.HostID, Metadata: metadata})
+	body, _ := json.Marshal(IngestBatch{HostID: cfg.HostID, Metadata: metadata, Telemetry: agentTelemetry(cfg)})
 	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(cfg.ServerURL, "/")+"/api/ingest", bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -175,10 +213,9 @@ func scanCodexFiles(db *sql.DB, cfg *AgentConfig, backfill bool) error {
 		if err := scanOne(db, cfg, path, backfill, baselineNew); err != nil {
 			return fmt.Errorf("scan %s: %w", filepath.Base(path), err)
 		}
-		if cfg.seen == nil {
-			cfg.seen = map[string]fileStamp{}
+		if err := rememberScannedFile(db, cfg, sid, stamp); err != nil {
+			return err
 		}
-		cfg.seen[sid] = stamp
 	}
 	if baselineNew {
 		_, err := db.Exec("INSERT OR REPLACE INTO meta(key,value)VALUES('baseline_complete',?)", time.Now().UTC().Format(time.RFC3339Nano))
@@ -188,6 +225,28 @@ func scanCodexFiles(db *sql.DB, cfg *AgentConfig, backfill bool) error {
 }
 
 func scanOne(db *sql.DB, cfg *AgentConfig, path string, backfill, baselineNew bool) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := scanOneTx(tx, cfg, path, backfill, baselineNew); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if cfg.health != nil {
+		var usage string
+		_ = db.QueryRow("SELECT value FROM meta WHERE key='last_usage_at'").Scan(&usage)
+		cfg.health.Lock()
+		cfg.health.value.LastUsageAt = parseTime(usage)
+		cfg.health.Unlock()
+	}
+	return nil
+}
+
+func scanOneTx(db *sql.Tx, cfg *AgentConfig, path string, backfill, baselineNew bool) error {
 	st, err := os.Stat(path)
 	if err != nil {
 		return nil
@@ -233,8 +292,9 @@ func scanOne(db *sql.DB, cfg *AgentConfig, path string, backfill, baselineNew bo
 	}
 	r := bufio.NewReaderSize(f, 256*1024)
 	current := offset
+	lines := 0
 	for {
-		line, e := r.ReadBytes('\n')
+		line, e := readMeterLine(r)
 		if e == io.EOF && len(line) > 0 {
 			break
 		}
@@ -243,6 +303,7 @@ func scanOne(db *sql.DB, cfg *AgentConfig, path string, backfill, baselineNew bo
 		}
 		lineStart := current
 		current += int64(len(line))
+		lines++
 		line = bytes.TrimSuffix(line, []byte{'\n'})
 		line = bytes.TrimSuffix(line, []byte{'\r'})
 		if ev, ok := parseCodexLine(line, cfg.HostID, sid, lineStart, &pc); ok {
@@ -260,9 +321,19 @@ func scanOne(db *sql.DB, cfg *AgentConfig, path string, backfill, baselineNew bo
 			ev.SourceEpoch = generation
 			ev.EventID = stableID(ev.EventID, fmt.Sprint(generation))
 			b, _ := json.Marshal(ev)
-			_, _ = db.Exec("INSERT OR IGNORE INTO spool(event_id,payload,created_at)VALUES(?,?,?)", ev.EventID, b, time.Now().UTC().Format(time.RFC3339Nano))
+			if _, err := db.Exec("INSERT OR IGNORE INTO spool(event_id,payload,created_at)VALUES(?,?,?)", ev.EventID, b, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+				return err
+			}
+			if ev.EventType == "exact_usage" {
+				if _, err := db.Exec("INSERT OR REPLACE INTO meta(key,value)VALUES('last_usage_at',?)", time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+					return err
+				}
+			}
 		}
 		if e == io.EOF {
+			break
+		}
+		if cfg.scheduler != nil && !backfill && (lines >= 512 || current-offset >= 1024*1024) {
 			break
 		}
 	}
@@ -270,7 +341,9 @@ func scanOne(db *sql.DB, cfg *AgentConfig, path string, backfill, baselineNew bo
 	return err
 }
 
-func queueBaseline(db *sql.DB, cfg *AgentConfig, path, sid string, size int64) error {
+func queueBaseline(db interface {
+	Exec(string, ...any) (sql.Result, error)
+}, cfg *AgentConfig, path, sid string, size int64) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -281,7 +354,7 @@ func queueBaseline(db *sql.DB, cfg *AgentConfig, path, sid string, size int64) e
 	lastByConversation := map[string]*UsageEvent{}
 	off := int64(0)
 	for {
-		b, readErr := r.ReadBytes('\n')
+		b, readErr := readMeterLine(r)
 		lineStart := off
 		off += int64(len(b))
 		// Most records contain messages or tool data. Avoid decoding them entirely.
@@ -312,6 +385,9 @@ func queueBaseline(db *sql.DB, cfg *AgentConfig, path, sid string, size int64) e
 
 func flushSpool(ctx context.Context, db *sql.DB, cfg *AgentConfig) error {
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		rows, err := db.Query("SELECT seq,payload FROM spool ORDER BY seq LIMIT 256")
 		if err != nil {
 			return err
@@ -321,18 +397,23 @@ func flushSpool(ctx context.Context, db *sql.DB, cfg *AgentConfig) error {
 		for rows.Next() {
 			var seq int64
 			var b []byte
-			if rows.Scan(&seq, &b) == nil {
-				var e UsageEvent
-				if json.Unmarshal(b, &e) == nil {
-					seqs = append(seqs, seq)
-					batch.Events = append(batch.Events, e)
-				}
+			if err := rows.Scan(&seq, &b); err != nil {
+				rows.Close()
+				return err
 			}
+			var e UsageEvent
+			if err := json.Unmarshal(b, &e); err != nil {
+				rows.Close()
+				return fmt.Errorf("invalid spool event at sequence %d; retained", seq)
+			}
+			seqs = append(seqs, seq)
+			batch.Events = append(batch.Events, e)
 		}
 		rows.Close()
 		if len(batch.Events) == 0 {
 			return nil
 		}
+		batch.Telemetry = agentTelemetry(cfg)
 		body, _ := json.Marshal(batch)
 		req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(cfg.ServerURL, "/")+"/api/ingest", bytes.NewReader(body))
 		if err != nil {
@@ -341,21 +422,62 @@ func flushSpool(ctx context.Context, db *sql.DB, cfg *AgentConfig) error {
 		req.Header.Set("Authorization", "Bearer "+cfg.Token)
 		req.Header.Set("Content-Type", "application/json")
 		client := &http.Client{Timeout: 10 * time.Second}
+		started := time.Now()
 		resp, err := client.Do(req)
+		if err != nil {
+			observeUpload(cfg, started, false)
+			return err
+		}
+		var acknowledgement struct {
+			Accepted int `json:"accepted"`
+		}
+		ackErr := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&acknowledgement)
+		resp.Body.Close()
+		if resp.StatusCode/100 != 2 {
+			observeUpload(cfg, started, false)
+			return fmt.Errorf("ingest HTTP %d", resp.StatusCode)
+		}
+		if ackErr != nil || acknowledgement.Accepted != len(batch.Events) {
+			observeUpload(cfg, started, false)
+			return errors.New("upload acknowledgement missing; spool retained")
+		}
+		tx, err := db.Begin()
 		if err != nil {
 			return err
 		}
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		resp.Body.Close()
-		if resp.StatusCode/100 != 2 {
-			return fmt.Errorf("ingest HTTP %d", resp.StatusCode)
-		}
 		for _, seq := range seqs {
-			_, _ = db.Exec("DELETE FROM spool WHERE seq=?", seq)
+			if _, err = tx.Exec("DELETE FROM spool WHERE seq=?", seq); err != nil {
+				tx.Rollback()
+				return err
+			}
 		}
+		if _, err = tx.Exec("INSERT OR REPLACE INTO meta(key,value)VALUES('last_upload_at',?)", time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err = tx.Commit(); err != nil {
+			return err
+		}
+		observeUpload(cfg, started, true)
 	}
 }
 
 func logSafe(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, time.Now().UTC().Format(time.RFC3339)+" "+format+"\n", args...)
+}
+
+// A malformed/oversized line must not consume unbounded RAM or silently skip
+// usage: report a scan failure and retain the checkpoint for investigation.
+func readMeterLine(r *bufio.Reader) ([]byte, error) {
+	var line []byte
+	for {
+		part, err := r.ReadSlice('\n')
+		if len(line)+len(part) > 8*1024*1024 {
+			return nil, errors.New("JSONL line exceeds 8MiB; checkpoint retained")
+		}
+		line = append(line, part...)
+		if err != bufio.ErrBufferFull {
+			return line, err
+		}
+	}
 }

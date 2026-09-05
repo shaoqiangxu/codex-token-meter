@@ -34,6 +34,9 @@ func parseCodexLine(raw []byte, hostID, sourceID string, offset int64, pc *parse
 	}
 	payload, _ := root["payload"].(map[string]any)
 	recordType, _ := root["type"].(string)
+	if payload == nil && recordType == "response.output_text.delta" {
+		payload = root
+	}
 	previousTurn := pc.turnID
 	updateParseContext(recordType, payload, pc)
 	if pc.conversationID == "" {
@@ -58,8 +61,25 @@ func parseCodexLine(raw []byte, hostID, sourceID string, offset int64, pc *parse
 			return e, true
 		}
 	}
-	// Visible deltas are tokenized locally; text is never retained in the event.
-	if delta, ok := findStringKey(payload, "text_delta", "delta"); ok && delta != "" {
+	payloadType, _ := payload["type"].(string)
+	runState := ""
+	if recordType == "event_msg" {
+		switch payloadType {
+		case "task_started", "turn_started":
+			runState = "running"
+		case "task_complete", "turn_completed", "turn_aborted", "task_aborted":
+			runState = "idle"
+		}
+	}
+	if runState != "" {
+		e := &UsageEvent{HostID: hostID, SourceFileID: sourceID, ByteOffset: offset, EventType: "activity", Timestamp: when, ConversationID: pc.conversationID, ParentConversationID: pc.parentID, TurnID: pc.turnID, ResponseID: pc.responseID, ProjectID: pc.projectID, RepoName: pc.repoName, Model: pc.model, ReasoningEffort: pc.effort, ModelContextWindow: pc.contextWindow, RunState: runState, DataQuality: "UNAVAILABLE", ParserVersion: parserVersion}
+		e.EventID = stableID(hostID, sourceID, itoa(offset), e.EventType, when.Format(time.RFC3339Nano), runState)
+		return e, true
+	}
+	// Only explicitly visible answer deltas, never arbitrary tool arguments or
+	// reasoning deltas. Text is estimated locally and never retained/uploaded.
+	visible := recordType == "response.output_text.delta" || payloadType == "response.output_text.delta" || payloadType == "agent_message_delta"
+	if delta, ok := findStringKey(payload, "text_delta", "delta"); visible && ok && delta != "" {
 		n := localEstimateTokens(delta)
 		if n > 0 {
 			e := &UsageEvent{HostID: hostID, SourceFileID: sourceID, ByteOffset: offset, EventType: "live_estimate", Timestamp: when, ConversationID: pc.conversationID, ParentConversationID: pc.parentID, TurnID: pc.turnID, ResponseID: pc.responseID, ProjectID: pc.projectID, RepoName: pc.repoName, Model: pc.model, ReasoningEffort: pc.effort, ModelContextWindow: pc.contextWindow, LiveEstimate: n, DataQuality: "ESTIMATED_LIVE", ParserVersion: parserVersion}
