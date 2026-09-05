@@ -191,7 +191,9 @@ func (s *server) snapshotSince(since time.Time) any {
 	return s.snapshotBetween(since, time.Now().UTC())
 }
 func (s *server) snapshotBetween(since, until time.Time) any {
-	rows, err := s.db.Query(`WITH `+sessionParentsCTE+`, u AS (SELECT host_id,conversation_id,SUM(input_tokens) input_tokens,SUM(cached_input_tokens) cached_input_tokens,SUM(cache_write_input_tokens) cache_write_input_tokens,SUM(output_tokens) output_tokens,SUM(reasoning_output_tokens) reasoning_output_tokens,SUM(total_tokens) total_tokens FROM usage_events WHERE timestamp>=? AND timestamp<? GROUP BY host_id,conversation_id)
+	workStarted := time.Now()
+	scope, args := s.scopeSQL([]any{usageBound(since), usageBound(until)})
+	rows, err := s.reader().Query(`WITH `+sessionParentsCTE+`, u AS (SELECT host_id,conversation_id,SUM(input_tokens) input_tokens,SUM(cached_input_tokens) cached_input_tokens,SUM(cache_write_input_tokens) cache_write_input_tokens,SUM(output_tokens) output_tokens,SUM(reasoning_output_tokens) reasoning_output_tokens,SUM(total_tokens) total_tokens FROM usage_events WHERE `+usageWindow+scope+` GROUP BY host_id,conversation_id)
 		SELECT s.host_id,a.alias,COALESCE(a.platform,''),s.conversation_id,s.display_parent_id,
 		COALESCE(NULLIF(parentm.project_name,''),NULLIF(ownm.project_name,''),NULLIF(s.repo_name,''),s.project_id,''),
 		COALESCE(NULLIF(s.display_name,''),NULLIF(parentm.conversation_name,''),NULLIF(ownm.conversation_name,''),''),
@@ -201,7 +203,7 @@ func (s *server) snapshotBetween(since, until time.Time) any {
 		LEFT JOIN u ON u.host_id=s.host_id AND u.conversation_id=s.conversation_id
 		LEFT JOIN session_metadata ownm ON ownm.host_id=s.host_id AND ownm.conversation_id=s.conversation_id
 		LEFT JOIN session_metadata parentm ON parentm.host_id=s.host_id AND parentm.conversation_id=s.display_parent_id
-		WHERE u.total_tokens IS NOT NULL OR s.live_estimate>0 ORDER BY s.last_event_at DESC`, rangeBound(since), rangeBound(until))
+		WHERE u.total_tokens IS NOT NULL ORDER BY s.last_event_at DESC`, args...)
 	if err != nil {
 		return map[string]any{"error": "database unavailable"}
 	}
@@ -242,21 +244,26 @@ func (s *server) snapshotBetween(since, until time.Time) any {
 		list = append(list, map[string]any{"host_id": v.HostID, "host": v.Host, "platform": v.Platform, "conversation_id": v.ConversationID, "parent_conversation_id": v.ParentID, "project": v.Project, "name": name, "model": v.Model, "reasoning_effort": v.Effort, "status": v.Status, "started_at": v.StartedAt, "last_event_at": v.LastEvent, "data_quality": v.Quality, "cache_write_visible": v.Quality != "CACHE_WRITE_UNKNOWN", "model_context_window": v.ContextWindow, "input_tokens": v.Input, "cached_input_tokens": v.Cached, "cache_write_input_tokens": v.CacheWrite, "output_tokens": v.Output, "reasoning_output_tokens": v.Reasoning, "total_tokens": v.Total, "live_estimate": v.Live, "cache_hit_rate": hit, "context_percent": ctx})
 	}
 	rows.Close()
-	rangeTotal, rangeBySession := rangeCosts(s.db, since, until)
+	queriedRows := len(list)
+	list = s.mergeRows(list)
+	queryMS := float64(time.Since(workStarted).Microseconds()) / 1000
+	pricingStarted := time.Now()
+	rangeTotal, rangeBySession := s.cachedRangeCosts(since, until)
+	pricingMS := float64(time.Since(pricingStarted).Microseconds()) / 1000
 	for _, item := range list {
 		c := rangeBySession[item["host_id"].(string)+"\x00"+item["conversation_id"].(string)]
 		item["api_cost"] = c.API.Value
 		item["vercel_cost"] = c.Vercel.Value
 		item["credits"] = c.Credits.Value
 	}
-	projectTotals := s.projectTotalsBetween(since, until, rangeBySession)
+	projectTotals := projectTotalsFromRows(list)
 	tot = s.tokenTotalsBetween(since, until)
 	var online int
-	s.db.QueryRow("SELECT COUNT(*) FROM agents WHERE revoked_at IS NULL AND last_seen>=?", time.Now().Add(-15*time.Second).UTC().Format(time.RFC3339Nano)).Scan(&online)
+	s.reader().QueryRow("SELECT COUNT(*) FROM agents WHERE revoked_at IS NULL AND last_seen>=?", time.Now().Add(-15*time.Second).UTC().Format(time.RFC3339Nano)).Scan(&online)
 	active := s.activeSessionCount(time.Now().UTC())
 	api, vercel, credits := rangeTotal.API, rangeTotal.Vercel, rangeTotal.Credits
 	var paid, purchased float64
-	s.db.QueryRow("SELECT COALESCE(SUM(paid_amount+fees),0),COALESCE(SUM(credits_received),0) FROM credit_purchases").Scan(&paid, &purchased)
+	s.reader().QueryRow("SELECT COALESCE(SUM(paid_amount+fees),0),COALESCE(SUM(credits_received),0) FROM credit_purchases").Scan(&paid, &purchased)
 	creditUSD := 0.0
 	if purchased > 0 {
 		creditUSD = credits.Value * paid / purchased
@@ -267,13 +274,13 @@ func (s *server) snapshotBetween(since, until time.Time) any {
 	if tot.InputTokens > 0 {
 		hit = float64(tot.CachedInputTokens) / float64(tot.InputTokens) * 100
 	}
-	return map[string]any{"generated_at": time.Now().UTC(), "range_start": since, "exchange_rate": fx, "hosts": s.hostViews(), "totals": map[string]any{"input_tokens": tot.InputTokens, "cached_input_tokens": tot.CachedInputTokens, "cache_write_input_tokens": tot.CacheWriteInputTokens, "cache_write_visible": tot.CacheWriteVisible, "output_tokens": tot.OutputTokens, "reasoning_output_tokens": tot.ReasoningOutputTokens, "total_tokens": tot.TotalTokens, "live_estimate": s.liveEstimateTotal(), "cache_hit_rate": hit, "active_sessions": active, "active_window_seconds": 300, "online_hosts": online, "online_window_seconds": 15, "api": api, "vercel": vercel, "credits": credits, "credits_purchase_usd": creditUSD, "api_cny": apiCNY, "vercel_cny": vercelCNY, "credits_purchase_cny": creditsCNY, "rmb_equivalent": apiCNY, "actual_incremental_cash": 0}, "project_totals": projectTotals, "sessions": list}
+	return map[string]any{"work_profile": map[string]float64{"rows_queried": float64(queriedRows), "rows_reused": float64(len(list) - queriedRows), "query_ms": queryMS, "pricing_ms": pricingMS, "total_ms": float64(time.Since(workStarted).Microseconds()) / 1000}, "generated_at": time.Now().UTC(), "range_start": since, "exchange_rate": fx, "hosts": s.hostViews(), "totals": map[string]any{"input_tokens": tot.InputTokens, "cached_input_tokens": tot.CachedInputTokens, "cache_write_input_tokens": tot.CacheWriteInputTokens, "cache_write_visible": tot.CacheWriteVisible, "output_tokens": tot.OutputTokens, "reasoning_output_tokens": tot.ReasoningOutputTokens, "total_tokens": tot.TotalTokens, "live_estimate": s.liveEstimateTotal(), "cache_hit_rate": hit, "active_sessions": active, "active_window_seconds": 300, "online_hosts": online, "online_window_seconds": 15, "api": api, "vercel": vercel, "credits": credits, "credits_purchase_usd": creditUSD, "api_cny": apiCNY, "vercel_cny": vercelCNY, "credits_purchase_cny": creditsCNY, "rmb_equivalent": apiCNY, "actual_incremental_cash": 0}, "project_totals": projectTotals, "sessions": list}
 }
 
 func (s *server) tokenTotalsBetween(since, until time.Time) TokenCounts {
 	result := TokenCounts{CacheWriteVisible: true}
 	var visible int
-	err := s.db.QueryRow(`SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(cached_input_tokens),0),COALESCE(SUM(cache_write_input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(reasoning_output_tokens),0),COALESCE(SUM(total_tokens),0),COALESCE(MIN(cache_write_visible),1) FROM usage_events WHERE timestamp>=? AND timestamp<?`, rangeBound(since), rangeBound(until)).Scan(&result.InputTokens, &result.CachedInputTokens, &result.CacheWriteInputTokens, &result.OutputTokens, &result.ReasoningOutputTokens, &result.TotalTokens, &visible)
+	err := s.reader().QueryRow(`SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(cached_input_tokens),0),COALESCE(SUM(cache_write_input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(reasoning_output_tokens),0),COALESCE(SUM(total_tokens),0),COALESCE(MIN(cache_write_visible),1) FROM usage_events WHERE `+usageWindow+``, usageBound(since), usageBound(until)).Scan(&result.InputTokens, &result.CachedInputTokens, &result.CacheWriteInputTokens, &result.OutputTokens, &result.ReasoningOutputTokens, &result.TotalTokens, &visible)
 	if err == nil {
 		result.CacheWriteVisible = visible != 0
 	}
@@ -282,7 +289,7 @@ func (s *server) tokenTotalsBetween(since, until time.Time) TokenCounts {
 
 func (s *server) liveEstimateTotal() int64 {
 	var total int64
-	_ = s.db.QueryRow("SELECT COALESCE(SUM(live_estimate),0) FROM sessions").Scan(&total)
+	_ = s.reader().QueryRow("SELECT COALESCE(SUM(live_estimate),0) FROM sessions").Scan(&total)
 	return total
 }
 
@@ -294,16 +301,16 @@ type projectAggregate struct {
 }
 
 func (s *server) projectTotalsBetween(since, until time.Time, costs map[string]providerCosts) []map[string]any {
-	rows, err := s.db.Query(`WITH `+sessionParentsCTE+`, u AS (
+	rows, err := s.reader().Query(`WITH `+sessionParentsCTE+`, u AS (
 		SELECT host_id,conversation_id,SUM(input_tokens) input_tokens,SUM(output_tokens) output_tokens,SUM(total_tokens) total_tokens
-		FROM usage_events WHERE timestamp>=? AND timestamp<? GROUP BY host_id,conversation_id
+		FROM usage_events WHERE `+usageWindow+` GROUP BY host_id,conversation_id
 	) SELECT s.host_id,s.conversation_id,s.display_parent_id,
 		COALESCE(NULLIF(parentm.project_name,''),NULLIF(ownm.project_name,''),NULLIF(s.repo_name,''),s.project_id,''),
 		COALESCE(NULLIF(s.display_name,''),NULLIF(parentm.conversation_name,''),NULLIF(ownm.conversation_name,''),''),
 		u.input_tokens,u.output_tokens,u.total_tokens
 		FROM u JOIN resolved_sessions s ON s.host_id=u.host_id AND s.conversation_id=u.conversation_id
 		LEFT JOIN session_metadata ownm ON ownm.host_id=s.host_id AND ownm.conversation_id=s.conversation_id
-		LEFT JOIN session_metadata parentm ON parentm.host_id=s.host_id AND parentm.conversation_id=s.display_parent_id`, rangeBound(since), rangeBound(until))
+		LEFT JOIN session_metadata parentm ON parentm.host_id=s.host_id AND parentm.conversation_id=s.display_parent_id`, usageBound(since), usageBound(until))
 	if err != nil {
 		return nil
 	}
@@ -356,7 +363,7 @@ func (s *server) projectTotalsBetween(since, until time.Time, costs map[string]p
 func (s *server) activeSessionCount(now time.Time) int {
 	var active int
 	cutoff := now.Add(-5 * time.Minute).Format(time.RFC3339Nano)
-	_ = s.db.QueryRow(`WITH `+sessionParentsCTE+` SELECT COUNT(*) FROM (
+	_ = s.reader().QueryRow(`WITH `+sessionParentsCTE+` SELECT COUNT(*) FROM (
 		SELECT s.host_id,COALESCE(NULLIF(s.display_parent_id,''),s.conversation_id) root_id
 		FROM resolved_sessions s JOIN agents a ON a.host_id=s.host_id
 		WHERE a.revoked_at IS NULL AND s.last_event_at>=?
@@ -366,7 +373,7 @@ func (s *server) activeSessionCount(now time.Time) int {
 }
 
 func (s *server) hostViews() []map[string]any {
-	rows, err := s.db.Query("SELECT a.host_id,a.alias,COALESCE(a.platform,''),COALESCE(a.last_seen,''),COALESCE(t.report,''),COALESCE(t.received_at,'') FROM agents a LEFT JOIN agent_telemetry t ON t.host_id=a.host_id WHERE a.revoked_at IS NULL ORDER BY a.platform,a.alias")
+	rows, err := s.reader().Query("SELECT a.host_id,a.alias,COALESCE(a.platform,''),COALESCE(a.last_seen,''),COALESCE(t.report,''),COALESCE(t.received_at,'') FROM agents a LEFT JOIN agent_telemetry t ON t.host_id=a.host_id WHERE a.revoked_at IS NULL ORDER BY a.platform,a.alias")
 	if err != nil {
 		return nil
 	}
@@ -390,6 +397,7 @@ func (s *server) hostViews() []map[string]any {
 		telemetry := decodeTelemetry(report)
 		syncState := "unknown"
 		if telemetry != nil {
+			telemetry.RetryRemainingMS = max(0, telemetry.RetryRemainingMS-max(0, time.Since(parseTime(received)).Milliseconds()))
 			if telemetry.ScanAgeMS >= 0 {
 				telemetry.ScanAgeMS += max(0, time.Since(parseTime(received)).Milliseconds())
 			}
@@ -446,7 +454,7 @@ func (s *server) sessionAPI(w http.ResponseWriter, r *http.Request) {
 		})(w, r)
 		return
 	}
-	rows, e := s.db.Query(`SELECT timestamp,input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,total_tokens,data_quality,parser_version,turn_id,response_id FROM usage_events WHERE conversation_id=? ORDER BY timestamp`, conv)
+	rows, e := s.reader().Query(`SELECT timestamp,input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,total_tokens,data_quality,parser_version,turn_id,response_id FROM usage_events WHERE conversation_id=? ORDER BY timestamp`, conv)
 	if e != nil {
 		http.Error(w, "db", 500)
 		return
@@ -465,7 +473,7 @@ func (s *server) sessionAPI(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) export(w http.ResponseWriter, r *http.Request) {
 	format := r.URL.Query().Get("format")
-	rows, e := s.db.Query(`SELECT timestamp,host_id,conversation_id,project_id,model,reasoning_effort,input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,total_tokens,data_quality FROM usage_events ORDER BY timestamp`)
+	rows, e := s.reader().Query(`SELECT timestamp,host_id,conversation_id,project_id,model,reasoning_effort,input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,total_tokens,data_quality FROM usage_events ORDER BY timestamp`)
 	if e != nil {
 		http.Error(w, "db", 500)
 		return
@@ -512,7 +520,7 @@ func (s *server) export(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) purchaseAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
-		rows, err := s.db.Query("SELECT id,purchase_time,paid_amount,currency,credits_received,fees,exchange_rate FROM credit_purchases ORDER BY purchase_time DESC")
+		rows, err := s.reader().Query("SELECT id,purchase_time,paid_amount,currency,credits_received,fees,exchange_rate FROM credit_purchases ORDER BY purchase_time DESC")
 		if err != nil {
 			http.Error(w, "db", 500)
 			return
@@ -603,7 +611,7 @@ func (s *server) enrollAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	var platform, exp string
 	var used any
-	if s.db.QueryRow("SELECT platform,expires_at,used_at FROM enrollments WHERE token_hash=?", tokenHash(in.Token)).Scan(&platform, &exp, &used) != nil || used != nil || platform != in.Platform || parseTime(exp).Before(time.Now()) {
+	if s.reader().QueryRow("SELECT platform,expires_at,used_at FROM enrollments WHERE token_hash=?", tokenHash(in.Token)).Scan(&platform, &exp, &used) != nil || used != nil || platform != in.Platform || parseTime(exp).Before(time.Now()) {
 		http.Error(w, "invalid enrollment", 401)
 		return
 	}
@@ -746,7 +754,7 @@ systemctl daemon-reload; systemctl enable --now codex-meter-agent
 }
 func (s *server) validEnrollment(token, platform string) bool {
 	var n int
-	s.db.QueryRow("SELECT COUNT(*) FROM enrollments WHERE token_hash=? AND platform=? AND used_at IS NULL AND expires_at>?", tokenHash(token), platform, time.Now().UTC().Format(time.RFC3339Nano)).Scan(&n)
+	s.reader().QueryRow("SELECT COUNT(*) FROM enrollments WHERE token_hash=? AND platform=? AND used_at IS NULL AND expires_at>?", tokenHash(token), platform, time.Now().UTC().Format(time.RFC3339Nano)).Scan(&n)
 	return n == 1
 }
 func (s *server) download(w http.ResponseWriter, r *http.Request) {

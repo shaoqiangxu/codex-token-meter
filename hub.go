@@ -29,6 +29,21 @@ type eventHub struct {
 	numbers           func(url.Values) *sseMessage
 	subscriptions     map[chan sseMessage]url.Values
 	windowDue         func() bool
+	tasks             func() any
+	taskClients       map[chan struct{}]bool
+	taskSeq           int64
+	fullSeq           int64
+}
+
+// Task evidence never waits behind the numeric publisher's history work.
+// Slow readers keep a one-slot wakeup and fetch the newest absolute task state.
+func (h *eventHub) markTasks() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.taskSeq++
+	for c := range h.taskClients {
+		wakeAgent(c)
+	}
 }
 
 func newHub() *eventHub {
@@ -38,7 +53,8 @@ func newHub() *eventHub {
 	}
 	return &eventHub{clients: map[chan sseMessage]bool{}, subscriptions: map[chan sseMessage]url.Values{}, epoch: epoch, interval: 200 * time.Millisecond, heartbeatInterval: 5 * time.Second}
 }
-func (h *eventHub) mark() { h.mu.Lock(); h.seq++; h.dirty = true; h.mu.Unlock() }
+func (h *eventHub) mark()        { h.mu.Lock(); h.seq++; h.fullSeq++; h.dirty = true; h.mu.Unlock() }
+func (h *eventHub) markNumbers() { h.mu.Lock(); h.seq++; h.dirty = true; h.mu.Unlock() }
 func (h *eventHub) run(ctx context.Context, snapshot func() any) {
 	t := time.NewTicker(h.interval)
 	defer t.Stop()
@@ -51,7 +67,7 @@ func (h *eventHub) run(ctx context.Context, snapshot func() any) {
 			if h.windowDue != nil && time.Since(lastWindow) >= time.Second {
 				lastWindow = time.Now()
 				if h.windowDue() {
-					h.mark()
+					h.markNumbers()
 				}
 			}
 			h.publish(snapshot)
@@ -144,7 +160,12 @@ func (h *eventHub) serve(w http.ResponseWriter, r *http.Request, snapshot func()
 	}
 	notify := r.URL.Query().Get("notify") == "1" || stream
 	c := make(chan sseMessage, 1)
+	taskWake := make(chan struct{}, 1)
 	h.mu.Lock()
+	if h.taskClients == nil {
+		h.taskClients = map[chan struct{}]bool{}
+	}
+	h.taskClients[taskWake] = true
 	h.clients[c] = notify
 	if stream {
 		q := r.URL.Query()
@@ -153,7 +174,13 @@ func (h *eventHub) serve(w http.ResponseWriter, r *http.Request, snapshot func()
 		h.subscriptions[c] = q
 	}
 	h.mu.Unlock()
-	defer func() { h.mu.Lock(); delete(h.clients, c); delete(h.subscriptions, c); h.mu.Unlock() }()
+	defer func() {
+		h.mu.Lock()
+		delete(h.clients, c)
+		delete(h.subscriptions, c)
+		delete(h.taskClients, taskWake)
+		h.mu.Unlock()
+	}()
 	if notify {
 		data := []byte(`{}`)
 		if h.notification != nil {
@@ -178,8 +205,25 @@ func (h *eventHub) serve(w http.ResponseWriter, r *http.Request, snapshot func()
 		select {
 		case <-r.Context().Done():
 			return
+		case <-taskWake:
+			if h.tasks == nil {
+				continue
+			}
+			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(10 * time.Second))
+			data, _ := json.Marshal(h.tasks())
+			if _, err := fmt.Fprintf(w, "event: tasks\ndata: %s\n\n", data); err != nil {
+				return
+			}
+			f.Flush()
 		case m := <-c:
 			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if m.Event == "numbers" {
+				var value map[string]any
+				if json.Unmarshal(m.Data, &value) == nil {
+					value["sse_emit_at"] = time.Now().UTC()
+					m.Data, _ = json.Marshal(value)
+				}
+			}
 			event := "update"
 			if notify {
 				event = "changed"

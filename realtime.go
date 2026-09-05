@@ -36,19 +36,28 @@ func (c RealtimeConfig) normalized() RealtimeConfig {
 
 // Only numeric health metadata. Never attach log lines or model content here.
 type AgentTelemetry struct {
-	AgentEpoch    string    `json:"agent_epoch"`
-	ReportSeq     uint64    `json:"report_seq"`
-	AgentVersion  string    `json:"agent_version"`
-	LastScanAt    time.Time `json:"last_scan_at"`
-	LastUsageAt   time.Time `json:"last_usage_at"`
-	LastUploadAt  time.Time `json:"last_upload_at"`
-	PendingEvents int64     `json:"pending_events"`
-	ScanMS        float64   `json:"scan_ms"`
-	UploadMS      float64   `json:"upload_ms"`
-	ScanAgeMS     int64     `json:"scan_age_ms"`
-	ScanFailed    bool      `json:"scan_failed"`
-	UploadFailed  bool      `json:"upload_failed"`
-	ActiveFiles   int       `json:"active_files"`
+	AgentEpoch       string    `json:"agent_epoch"`
+	ReportSeq        uint64    `json:"report_seq"`
+	AgentVersion     string    `json:"agent_version"`
+	BuildCommit      string    `json:"build_commit,omitempty"`
+	ProcessID        int       `json:"process_id"`
+	ProcessStartedAt time.Time `json:"process_started_at"`
+	OldestPendingMS  int64     `json:"oldest_pending_ms"`
+	RetryAt          time.Time `json:"retry_at"`
+	RetryRemainingMS int64     `json:"retry_remaining_ms"`
+	ScanError        string    `json:"scan_error,omitempty"`
+	WatchAvailable   bool      `json:"watch_available"`
+	LastScanAt       time.Time `json:"last_scan_at"`
+	LastUsageAt      time.Time `json:"last_usage_at"`
+	LastUploadAt     time.Time `json:"last_upload_at"`
+	PendingEvents    int64     `json:"pending_events"`
+	ScanMS           float64   `json:"scan_ms"`
+	UploadMS         float64   `json:"upload_ms"`
+	ScanAgeMS        int64     `json:"scan_age_ms"`
+	ScanFailed       bool      `json:"scan_failed"`
+	UploadFailed     bool      `json:"upload_failed"`
+	UploadError      string    `json:"upload_error,omitempty"`
+	ActiveFiles      int       `json:"active_files"`
 }
 
 type agentHealth struct {
@@ -57,19 +66,26 @@ type agentHealth struct {
 }
 
 func (s *server) watermark() map[string]any {
+	if s.pinnedWatermark != nil {
+		return s.pinnedWatermark
+	}
 	var ledger int64
 	var last string
 	_ = s.db.QueryRow("SELECT ledger_revision,last_ledger_at FROM realtime_state WHERE id=1").Scan(&ledger, &last)
 	s.hub.mu.Lock()
-	revision, epoch, sent := s.hub.seq, s.hub.epoch, s.hub.lastSent
+	revision, epoch, sent, full := s.hub.seq, s.hub.epoch, s.hub.lastSent, s.hub.fullSeq
 	s.hub.mu.Unlock()
-	return map[string]any{"server_epoch": epoch, "revision": revision, "ledger_revision": ledger, "last_ledger_at": last, "server_time": time.Now().UTC(), "sse_last_sent_at": sent}
+	return map[string]any{"server_epoch": epoch, "revision": revision, "full_revision": full, "ledger_revision": ledger, "last_ledger_at": last, "server_time": time.Now().UTC(), "sse_last_sent_at": sent}
 }
 
 func (s *server) heartbeat() any {
 	m := s.watermark()
+	s.hub.mu.Lock()
+	m["runtime_revision"] = s.hub.taskSeq
+	s.hub.mu.Unlock()
 	m["hosts"] = s.hostViews()
 	m["runtime"] = s.runtimeViews()
+	m["delivery_trace"] = s.traces.recent()
 	m["realtime_config"] = s.cfg.Realtime.normalized()
 	return m
 }
@@ -91,6 +107,15 @@ func (s *server) attachWatermark(value map[string]any, queryKey string, started 
 	value["query_key"] = queryKey
 	value["server_build_ms"] = float64(time.Since(started).Microseconds()) / 1000
 	value["realtime_config"] = s.cfg.Realtime.normalized()
+	traces := []DeliveryTrace{}
+	start, _ := value["range_start"].(time.Time)
+	end, _ := value["range_end"].(time.Time)
+	for _, trace := range s.traces.recent() {
+		if trace.Kind != "exact_usage" || (!trace.SourceAt.Before(start) && trace.SourceAt.Before(end)) {
+			traces = append(traces, trace)
+		}
+	}
+	value["delivery_trace"] = traces
 }
 
 func decodeTelemetry(b []byte) *AgentTelemetry {

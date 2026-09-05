@@ -23,16 +23,23 @@ import (
 var webFS embed.FS
 
 type server struct {
-	cfg         ServerConfig
-	db          *sql.DB
-	hub         *eventHub
-	loginMu     sync.Mutex
-	login       map[string][]time.Time
-	ingestMu    sync.Mutex
-	ingestTimes map[string][]time.Time
-	snapshots   snapshotCache
-	viewMu      sync.RWMutex
-	numeric     numericViews
+	cfg             ServerConfig
+	db              *sql.DB
+	read            sqlReader
+	readPool        *sql.DB
+	pinnedWatermark map[string]any
+	accounting      *accountingCache
+	priorRows       []map[string]any
+	rowScope        map[string]bool
+	hub             *eventHub
+	loginMu         sync.Mutex
+	login           map[string][]time.Time
+	ingestMu        sync.Mutex
+	ingestTimes     map[string][]time.Time
+	snapshots       snapshotCache
+	viewMu          sync.RWMutex
+	numeric         numericViews
+	traces          deliveryTraces
 }
 
 func runServer(ctx context.Context, configPath string) error {
@@ -56,9 +63,16 @@ func runServer(ctx context.Context, configPath string) error {
 		return err
 	}
 	s := &server{cfg: cfg, db: db, hub: newHub(), login: map[string][]time.Time{}, ingestTimes: map[string][]time.Time{}}
+	s.readPool, err = openSQLite(filepath.Join(cfg.DataDir, "meter.db"))
+	if err != nil {
+		return err
+	}
+	defer s.readPool.Close()
+	s.accounting = &accountingCache{}
 	s.hub.interval = time.Duration(cfg.Realtime.normalized().CoalesceMS) * time.Millisecond
 	s.hub.heartbeatInterval = time.Duration(cfg.Realtime.normalized().HeartbeatMS) * time.Millisecond
 	s.hub.pulse = s.heartbeat
+	s.hub.tasks = s.taskMessage
 	s.hub.notification = func() any { return s.watermark() }
 	s.hub.numbers = s.numericMessage
 	s.hub.windowDue = s.numericWindowDue
@@ -146,7 +160,9 @@ func (s *server) ingest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "rate limited", http.StatusTooManyRequests)
 		return
 	}
+	lockStarted := time.Now()
 	s.viewMu.Lock()
+	lockMS := float64(time.Since(lockStarted).Microseconds()) / 1000
 	defer s.viewMu.Unlock()
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -155,6 +171,12 @@ func (s *server) ingest(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 	changed := false
+	var ledgerBefore int64
+	if err = tx.QueryRow("SELECT COALESCE(MAX(id),0) FROM usage_events").Scan(&ledgerBefore); err != nil {
+		http.Error(w, "db", 500)
+		return
+	}
+	var traced []UsageEvent
 	for _, e := range b.Events {
 		if e.HostID != b.HostID || !validUsageEvent(e) {
 			http.Error(w, "host mismatch", 403)
@@ -166,6 +188,9 @@ func (s *server) ingest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		changed = changed || !exists
+		if !exists {
+			traced = append(traced, e)
+		}
 		if err = s.applyEvent(tx, e); err != nil {
 			http.Error(w, "ingest failed", 500)
 			return
@@ -194,13 +219,25 @@ func (s *server) ingest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "db", 500)
 		return
 	}
+	commitStarted := time.Now()
+	var ledgerAfter int64
+	if err = tx.QueryRow("SELECT COALESCE(MAX(id),0) FROM usage_events").Scan(&ledgerAfter); err != nil {
+		http.Error(w, "db", 500)
+		return
+	}
 	if err = tx.Commit(); err != nil {
 		http.Error(w, "db", 500)
 		return
 	}
+	s.traces.add(traced, started, time.Now().UTC(), lockMS, float64(time.Since(commitStarted).Microseconds())/1000)
 	// Heartbeats update freshness, not history; replays do not advance data.
-	if changed || len(b.Metadata) > 0 {
+	if len(b.Metadata) > 0 {
 		s.hub.mark()
+	} else if ledgerAfter != ledgerBefore {
+		s.hub.markNumbers()
+	}
+	if changed || len(b.Metadata) > 0 {
+		s.hub.markTasks()
 	}
 	w.Header().Set("Server-Timing", fmt.Sprintf("ingest;dur=%.3f", float64(time.Since(started).Microseconds())/1000))
 	writeJSON(w, map[string]any{"accepted": len(b.Events), "metadata_accepted": len(b.Metadata)})

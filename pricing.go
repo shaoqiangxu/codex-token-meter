@@ -34,7 +34,7 @@ type priceRule struct {
 }
 
 // Load the versioned price table once, while retaining per-request pricing.
-func loadPriceRules(db *sql.DB) ([]priceRule, error) {
+func loadPriceRules(db sqlReader) ([]priceRule, error) {
 	rows, err := db.Query(`SELECT provider,plan_profile,model,effective_from,COALESCE(effective_to,''),input_rate,cached_input_rate,cache_write_rate,output_rate,long_input_multiplier,long_output_multiplier,long_context_threshold,currency,verified_at,stale FROM prices ORDER BY effective_from DESC`)
 	if err != nil {
 		return nil, err
@@ -61,12 +61,12 @@ func costFromRules(rules []priceRule, provider, profile, model string, c TokenCo
 	return CostBreakdown{}, sql.ErrNoRows
 }
 
-func rangeCosts(db *sql.DB, since, until time.Time) (providerCosts, map[string]providerCosts) {
+func rangeCosts(db sqlReader, since, until time.Time) (providerCosts, map[string]providerCosts) {
 	rules, err := loadPriceRules(db)
 	if err != nil {
 		return providerCosts{}, map[string]providerCosts{}
 	}
-	rows, err := db.Query(`SELECT host_id,conversation_id,timestamp,input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,total_tokens,cache_write_visible FROM usage_events WHERE timestamp>=? AND timestamp<? ORDER BY timestamp`, rangeBound(since), rangeBound(until))
+	rows, err := db.Query(`SELECT host_id,conversation_id,timestamp,input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,total_tokens,cache_write_visible FROM usage_events WHERE `+usageWindow+` ORDER BY timestamp`, usageBound(since), usageBound(until))
 	if err != nil {
 		return providerCosts{}, map[string]providerCosts{}
 	}

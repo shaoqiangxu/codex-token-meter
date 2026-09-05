@@ -695,6 +695,7 @@ function connect() {
     if (eventStream !== events || document.hidden || rangeDraft) return;
     try {
       const data = JSON.parse(event.data);
+      data.sse_received_browser_at = new Date().toISOString();
       connection.received();
       window.meterDiagnostics = {...window.meterDiagnostics, sse_received_at: new Date().toISOString()};
       action(data);
@@ -704,6 +705,12 @@ function connect() {
     if (!rangeLoader?.busy() && (!state.generated_at || data.server_epoch !== state.server_epoch || data.revision !== state.data_revision)) loadPeriod();
   });
   consume('changed', scheduleRefresh); // Backward-compatible invalidation.
+  consume('tasks', data => {
+    const started=performance.now();
+    if (data.server_epoch !== state.server_epoch) {loadPeriod();return;}
+    applyPulse(data);
+    recordDelivery(data,started,true);
+  });
   consume('heartbeat', data => {
     if (!connection.heartbeat(data)) return;
     applyPulse(data);
@@ -729,12 +736,14 @@ function connect() {
 }
 
 function applyConfirmed(data, timing) {
+  const applyStarted=performance.now();
   if (!realtime.acceptsSnapshot(state, data, connection.expectedEpoch)) {
     if (data.server_epoch && data.server_epoch !== state.server_epoch) connect();
     else scheduleRefresh();
     return;
   }
   const previous = state;
+  if (previous.server_epoch === data.server_epoch && (previous.runtime_revision ?? -1) > (data.runtime_revision ?? -1)) data={...data,runtime:previous.runtime,runtime_revision:previous.runtime_revision};
   pulseAt = performance.now();
   connection.applied(data);
   snapshotFailed = false;
@@ -753,6 +762,14 @@ function applyConfirmed(data, timing) {
   updateText($('#loadStatus'), `已筛选：${periodLabels[data.period] || '今天'}`);
   $('#cards').setAttribute('aria-busy', 'false');
   updateConnectionUI();
+  renderCurrentTasks();
+  recordDelivery(data,applyStarted,false);
+}
+
+function recordDelivery(data,applyStarted,tasksOnly) {
+  const entries=window.meterDeliveryTrace || [];
+  for (const trace of data.delivery_trace || []) if ((!tasksOnly || trace.kind !== 'exact_usage') && !entries.some(item=>item.event_id===trace.event_id)) entries.push({...trace,sse_emit_at:data.sse_emit_at,sse_received_browser_at:data.sse_received_browser_at,browser_applied_at:new Date().toISOString(),browser_apply_ms:performance.now()-applyStarted,task_visible:(state.runtime||[]).some(row=>row.conversation_id===trace.conversation_id)||(state.sessions||[]).some(row=>row.conversation_id===trace.conversation_id),runtime_state:(state.runtime||[]).find(row=>row.conversation_id===trace.conversation_id)?.runtime_state});
+  window.meterDeliveryTrace=entries.slice(-128);
 }
 
 function applyPulse(data) {
@@ -763,8 +780,25 @@ function applyPulse(data) {
     refreshCoalesceMS = realtimeConfig.coalesce_ms;
   }
   if (data.hosts) state.hosts = data.hosts;
-  if (data.runtime) state.runtime = data.runtime;
+  if (data.runtime && (data.runtime_revision ?? 0) >= (state.runtime_revision ?? 0)) {state.runtime = data.runtime;state.runtime_revision=data.runtime_revision;}
+  renderCurrentTasks();
   updateConnectionUI();
+}
+
+function renderCurrentTasks() {
+  const container=$('#currentTasks');if(!container)return;
+  const wanted=new Set();
+  for(const task of state.runtime||[]) {
+    const key=task.host_id+'\u0000'+task.conversation_id;wanted.add(key);
+    let node=[...container.children].find(n=>n.dataset.taskKey===key);
+    if(!node){node=document.createElement('div');node.className='session-group';node.dataset.taskKey=key;node.innerHTML='<strong data-task-name></strong><div data-task-state></div><div data-task-usage></div>';container.appendChild(node);}
+    updateText(node.querySelector('[data-task-name]'),`${task.host||task.host_id} · ${task.name||task.conversation_id}`);
+    const host=(state.hosts||[]).find(h=>h.host_id===task.host_id);
+    const label=task.runtime_state==='idle'?'已完成/空闲':task.runtime_state==='running'&&host?.connection_state==='online'&&task.evidence_age_ms+performance.now()-pulseAt<300000?'执行中':'状态待确认（保留上次证据）';
+    updateText(node.querySelector('[data-task-state]'),`${label} · 最近状态 ${stamp(task.evidence_at)}`);
+    updateText(node.querySelector('[data-task-usage]'),task.settled_this_turn?`最近精确usage ${stamp(task.last_exact_at)}`:Number(task.live_estimate)>0?`${token(task.live_estimate)} Token（可见输出估算，尚未结算）`:'Token尚未结算；等待usage');
+  }
+  for(const node of [...container.children]) if(!wanted.has(node.dataset.taskKey)) {const selection=document.getSelection();if(!selection||selection.isCollapsed||!selection.containsNode(node,true))node.remove();}
 }
 
 function taskRuntimeLabel(hostID, rootID) {
@@ -787,7 +821,10 @@ function updateConnectionUI() {
     host.connection_state = age >= realtimeConfig.offline_ms ? 'offline' : age >= realtimeConfig.delayed_ms ? 'delayed' : 'online';
     const telemetry = host.telemetry;
     let sync = !telemetry ? '采集进度未知（旧版Agent）' : telemetry.pending_events > 0 || telemetry.upload_failed ? `待上传 ${token(telemetry.pending_events)} 条事件` : '队列已同步';
-    if (telemetry && (telemetry.scan_failed || telemetry.scan_age_ms < 0 || telemetry.scan_age_ms + elapsed > realtimeConfig.delayed_ms)) sync = '扫描数据陈旧，待确认';
+    if(telemetry?.pending_events) sync+=` · 最老积压${Math.ceil((telemetry.oldest_pending_ms||0)/1000)}秒`;
+    if(telemetry?.retry_remaining_ms>elapsed) sync+=` · ${Math.ceil((telemetry.retry_remaining_ms-elapsed)/1000)}秒后重试`;
+    if(telemetry?.upload_error) sync+=` · ${telemetry.upload_error}`;
+    if (telemetry && (telemetry.scan_failed || telemetry.scan_age_ms < 0 || telemetry.scan_age_ms + elapsed > realtimeConfig.delayed_ms)) sync += ` · 扫描数据陈旧，待确认${telemetry.scan_error?' · '+telemetry.scan_error:''}`;
     if (!telemetry || host.connection_state !== 'online') unknown = true;
     if (telemetry?.pending_events || telemetry?.upload_failed || telemetry?.scan_failed || sync.includes('陈旧')) pending = true;
     const device = document.querySelector(`[data-device-key="${domKey(host.host_id)}"]`);

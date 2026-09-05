@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -27,6 +28,7 @@ func migrateAgent(db *sql.DB) error {
 	for _, col := range []string{"model TEXT NOT NULL DEFAULT ''", "reasoning_effort TEXT NOT NULL DEFAULT ''", "project_id TEXT NOT NULL DEFAULT ''", "repo_name TEXT NOT NULL DEFAULT ''", "parent_id TEXT NOT NULL DEFAULT ''", "context_window INTEGER NOT NULL DEFAULT 0", "turn_id TEXT NOT NULL DEFAULT ''", "response_id TEXT NOT NULL DEFAULT ''", "last_counter_total INTEGER NOT NULL DEFAULT 0", "counter_initialized INTEGER NOT NULL DEFAULT 0"} {
 		_, _ = db.Exec("ALTER TABLE files ADD COLUMN " + col)
 	}
+	_, _ = db.Exec("ALTER TABLE files ADD COLUMN runtime_state TEXT NOT NULL DEFAULT ''")
 	return nil
 }
 
@@ -63,7 +65,14 @@ func runAgent(ctx context.Context, configPath string, once, backfill bool) error
 		return err
 	}
 	cfg.localDB = db
-	cfg.health = &agentHealth{value: AgentTelemetry{AgentEpoch: epoch, AgentVersion: version}}
+	cfg.health = &agentHealth{value: AgentTelemetry{AgentEpoch: epoch, AgentVersion: version, ProcessID: os.Getpid(), ProcessStartedAt: time.Now().UTC()}}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, setting := range info.Settings {
+			if setting.Key == "vcs.revision" {
+				cfg.health.value.BuildCommit = setting.Value
+			}
+		}
+	}
 	var lastUsage string
 	_ = db.QueryRow("SELECT value FROM meta WHERE key='last_usage_at'").Scan(&lastUsage)
 	cfg.health.value.LastUsageAt = parseTime(lastUsage)
@@ -83,6 +92,15 @@ func runAgent(ctx context.Context, configPath string, once, backfill bool) error
 		return sendHeartbeat(ctx, &cfg)
 	}
 	ctx, cancel := context.WithCancel(ctx)
+	cfg.watcher, err = watchSources(cfg.CodexHomes)
+	var fileWake <-chan struct{}
+	if err == nil {
+		defer cfg.watcher.watcher.Close()
+		fileWake = cfg.watcher.wake
+		cfg.health.value.WatchAvailable = true
+	} else {
+		logSafe("file notifications unavailable; discovery fallback active")
+	}
 	uploadWake, healthWake := make(chan struct{}, 1), make(chan struct{}, 1)
 	var workers sync.WaitGroup
 	workers.Add(2)
@@ -100,7 +118,7 @@ func runAgent(ctx context.Context, configPath string, once, backfill bool) error
 				wakeAgent(healthWake)
 			}
 			return err
-		})
+		}, func(at time.Time) { cfg.health.Lock(); cfg.health.value.RetryAt = at; cfg.health.Unlock() })
 	}()
 	go func() {
 		defer workers.Done()
@@ -114,7 +132,7 @@ func runAgent(ctx context.Context, configPath string, once, backfill bool) error
 		observeScan(&cfg, started, err)
 		wakeAgent(uploadWake)
 		if err != nil && time.Since(lastScanError) >= 30*time.Second {
-			logSafe("agent scan deferred (checkpoint retained)")
+			logSafe("agent scan blocked: %s (checkpoint retained)", safeScanError(err))
 			lastScanError = time.Now()
 		}
 	}
@@ -126,6 +144,8 @@ func runAgent(ctx context.Context, configPath string, once, backfill bool) error
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
+			scan()
+		case <-fileWake:
 			scan()
 		}
 	}
@@ -236,6 +256,14 @@ func scanOne(db *sql.DB, cfg *AgentConfig, path string, backfill, baselineNew bo
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+	if cfg.scheduler != nil {
+		var state string
+		_ = db.QueryRow("SELECT runtime_state FROM files WHERE source_file_id=?", sourceIdentity(path)).Scan(&state)
+		if cfg.scheduler.running == nil {
+			cfg.scheduler.running = map[string]bool{}
+		}
+		cfg.scheduler.running[path] = state == "running"
+	}
 	if cfg.health != nil {
 		var usage string
 		_ = db.QueryRow("SELECT value FROM meta WHERE key='last_usage_at'").Scan(&usage)
@@ -247,6 +275,7 @@ func scanOne(db *sql.DB, cfg *AgentConfig, path string, backfill, baselineNew bo
 }
 
 func scanOneTx(db *sql.Tx, cfg *AgentConfig, path string, backfill, baselineNew bool) error {
+	observedAt := time.Now().UTC()
 	st, err := os.Stat(path)
 	if err != nil {
 		return nil
@@ -299,7 +328,7 @@ func scanOneTx(db *sql.Tx, cfg *AgentConfig, path string, backfill, baselineNew 
 			break
 		}
 		if e != nil && e != io.EOF {
-			return e
+			return &scanBlock{sid, current, "line_read_blocked_limit_64MiB"}
 		}
 		lineStart := current
 		current += int64(len(line))
@@ -307,6 +336,15 @@ func scanOneTx(db *sql.Tx, cfg *AgentConfig, path string, backfill, baselineNew 
 		line = bytes.TrimSuffix(line, []byte{'\n'})
 		line = bytes.TrimSuffix(line, []byte{'\r'})
 		if ev, ok := parseCodexLine(line, cfg.HostID, sid, lineStart, &pc); ok {
+			if ev.EventType == "activity" || ev.EventType == "runtime" || ev.EventType == "live_estimate" {
+				state := "running"
+				if ev.RunState == "idle" {
+					state = "idle"
+				}
+				if _, err := db.Exec("UPDATE files SET runtime_state=? WHERE source_file_id=?", state, sid); err != nil {
+					return err
+				}
+			}
 			if ev.EventType == "exact_usage" {
 				// Codex can restart its cumulative token counter inside the same
 				// append-only rollout file (for example after a task is resumed).
@@ -320,6 +358,7 @@ func scanOneTx(db *sql.Tx, cfg *AgentConfig, path string, backfill, baselineNew 
 			}
 			ev.SourceEpoch = generation
 			ev.EventID = stableID(ev.EventID, fmt.Sprint(generation))
+			ev.Trace = &DeliveryTrace{ObservedAt: observedAt, QueuedAt: time.Now().UTC()}
 			b, _ := json.Marshal(ev)
 			if _, err := db.Exec("INSERT OR IGNORE INTO spool(event_id,payload,created_at)VALUES(?,?,?)", ev.EventID, b, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 				return err
@@ -339,6 +378,24 @@ func scanOneTx(db *sql.Tx, cfg *AgentConfig, path string, backfill, baselineNew 
 	}
 	_, err = db.Exec("UPDATE files SET path=?,offset=?,size=?,mtime=?,generation=?,session_id=?,last_event_at=?,parser_version=?,model=?,reasoning_effort=?,project_id=?,repo_name=?,parent_id=?,context_window=?,turn_id=?,response_id=?,last_counter_total=?,counter_initialized=? WHERE source_file_id=?", path, current, st.Size(), st.ModTime().UnixNano(), generation, pc.conversationID, time.Now().UTC().Format(time.RFC3339Nano), parserVersion, pc.model, pc.effort, pc.projectID, pc.repoName, pc.parentID, pc.contextWindow, pc.turnID, pc.responseID, lastCounterTotal, counterInitialized, sid)
 	return err
+}
+
+type scanBlock struct {
+	source string
+	offset int64
+	code   string
+}
+
+func (e *scanBlock) Error() string {
+	return fmt.Sprintf("source_id=%s offset=%d code=%s", e.source, e.offset, e.code)
+}
+func safeScanError(err error) string {
+	var blocked *scanBlock
+	if errors.As(err, &blocked) {
+		return blocked.Error()
+	}
+	// Paths and arbitrary parser/OS error text never leave the collector.
+	return "code=scan_io_or_database_error"
 }
 
 func queueBaseline(db interface {
@@ -414,6 +471,11 @@ func flushSpool(ctx context.Context, db *sql.DB, cfg *AgentConfig) error {
 			return nil
 		}
 		batch.Telemetry = agentTelemetry(cfg)
+		for i := range batch.Events {
+			if batch.Events[i].Trace != nil {
+				batch.Events[i].Trace.SentAt = time.Now().UTC()
+			}
+		}
 		body, _ := json.Marshal(batch)
 		req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(cfg.ServerURL, "/")+"/api/ingest", bytes.NewReader(body))
 		if err != nil {
@@ -434,7 +496,7 @@ func flushSpool(ctx context.Context, db *sql.DB, cfg *AgentConfig) error {
 		ackErr := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&acknowledgement)
 		resp.Body.Close()
 		if resp.StatusCode/100 != 2 {
-			observeUpload(cfg, started, false)
+			observeUpload(cfg, started, false, fmt.Sprintf("http_%d", resp.StatusCode))
 			return fmt.Errorf("ingest HTTP %d", resp.StatusCode)
 		}
 		if ackErr != nil || acknowledgement.Accepted != len(batch.Events) {
@@ -466,14 +528,17 @@ func logSafe(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, time.Now().UTC().Format(time.RFC3339)+" "+format+"\n", args...)
 }
 
-// A malformed/oversized line must not consume unbounded RAM or silently skip
-// usage: report a scan failure and retain the checkpoint for investigation.
+// Read in 256KiB chunks with a hard bound, not Scanner's small token limit.
+// Real Codex compaction records can exceed 8MiB (observed 8,970,082 bytes).
+// Do not skip them: the existing parser and checkpoint/spool transaction still
+// see every complete record, including any usage. Larger records remain an
+// explicit, source/offset-addressable block, never silent data loss.
 func readMeterLine(r *bufio.Reader) ([]byte, error) {
 	var line []byte
 	for {
 		part, err := r.ReadSlice('\n')
-		if len(line)+len(part) > 8*1024*1024 {
-			return nil, errors.New("JSONL line exceeds 8MiB; checkpoint retained")
+		if len(line)+len(part) > 64*1024*1024 {
+			return nil, errors.New("JSONL line exceeds 64MiB; checkpoint retained")
 		}
 		line = append(line, part...)
 		if err != bufio.ErrBufferFull {

@@ -70,6 +70,20 @@ async function desktop() {
   const {browser, context, page} = await newPage(chromium, 1440);
   try {
     await fits(page);
+    const startedOnly='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+    const priorUsage=await page.evaluate(()=>state.totals.total_tokens);
+    let started=performance.now();
+    const taskEvent={host_id:'h',source_file_id:startedOnly,conversation_id:startedOnly,event_id:`started-${Date.now()}`,event_type:'activity',runtime_state:'running',turn_id:'task-one',timestamp:new Date().toISOString(),repo_name:'Started Only Test',data_quality:'UNAVAILABLE'};
+    await ingest([taskEvent]);
+    await page.waitForFunction(id=>[...document.querySelectorAll('#currentTasks [data-task-name]')].some(n=>n.closest('[data-task-key]').dataset.taskKey.endsWith(id)),startedOnly);
+    timings.started_only_visible_ms=Math.round(performance.now()-started);
+    assert.equal(await page.evaluate(()=>state.totals.total_tokens),priorUsage,'started-only changed ledger');
+    assert.match(await page.locator('#currentTasks').innerText(),/Token尚未结算/);
+    started=performance.now();
+    await ingest([{...taskEvent,event_id:`complete-${Date.now()}`,runtime_state:'idle',timestamp:new Date().toISOString()}]);
+    await page.waitForFunction(()=>document.querySelector('#currentTasks')?.textContent.includes('已完成/空闲'));
+    timings.completion_without_usage_ms=Math.round(performance.now()-started);
+    assert.equal(await page.evaluate(()=>state.totals.total_tokens),priorUsage,'completion invented usage');
     let requests = 0;
     page.on('request', r => { if (r.url().includes('/api/snapshot?')) requests++; });
     let expected = await page.evaluate(() => state.totals.total_tokens);
