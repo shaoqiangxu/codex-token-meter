@@ -141,6 +141,8 @@ function renderCards(snapshot) {
 }
 
 function render(snapshot, forceStructure = false) {
+  const started = performance.now();
+  if (snapshot.realtime_config?.coalesce_ms) refreshCoalesceMS = Math.min(250, Math.max(100, snapshot.realtime_config.coalesce_ms));
   state = snapshot;
   renderCards(snapshot);
   if (forceStructure) renderedStructure = '';
@@ -150,6 +152,7 @@ function render(snapshot, forceStructure = false) {
   updateText($('#rangeText'), `${start} → ${stamp(snapshot.range_end)}`);
   updateText($('#rangeRule'), rangeRule(snapshot.period));
   updateText($('#dataCoverage'), snapshot.data_start ? `已采集数据始于 ${stamp(snapshot.data_start)}（北京时间）` : '尚无已采集的用量记录');
+  if (typeof window !== 'undefined') window.meterDiagnostics = {...window.meterDiagnostics, applied_revision: snapshot.revision, server_epoch: snapshot.server_epoch, applied_at: new Date().toISOString(), apply_ms: performance.now() - started, server_build_ms: snapshot.server_build_ms};
 }
 
 const sumFields = ['live_estimate', 'total_tokens', 'input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens', 'api_cost', 'vercel_cost', 'credits'];
@@ -570,12 +573,17 @@ function rangeQuery(period, from = '', to = '') {
 function createRangeLoader(fetcher, onData, onStatus) {
   let sequence = 0;
   let current;
+  let pending;
   const load = async (query, replace = false) => {
-    if (current && !replace) return;
-    current?.abort();
+    if (current) {
+      pending = {query, replace};
+      if (replace) { sequence++; current.abort(); }
+      return;
+    }
     const controller = new AbortController();
     current = controller;
     const ticket = ++sequence;
+    const started = performance.now();
     const timeout = setTimeout(() => controller.abort(), 15000);
     onStatus('loading', replace);
     try {
@@ -585,16 +593,24 @@ function createRangeLoader(fetcher, onData, onStatus) {
       const data = await response.json();
       if (ticket !== sequence || controller.signal.aborted) return;
       if (data.error) throw new Error('数据暂时不可用，请重试');
-      onData(data);
+      onData(data, {request_ms: performance.now() - started});
       onStatus('ready', replace);
     } catch (error) {
       if (ticket === sequence) onStatus('error', replace, error.name === 'AbortError' ? '加载超时，请点击重试' : error.message);
     } finally {
       clearTimeout(timeout);
-      if (ticket === sequence) current = null;
+      if (current === controller) current = null;
+      if (pending) {
+        const next = pending;
+        pending = undefined;
+        // Consume the dirty flag immediately, without another debounce. A
+        // notification never aborts the slow request already in progress.
+        void load(next.query, next.replace);
+      }
     }
   };
-  load.cancel = () => { sequence++; current?.abort(); current = null; };
+  load.cancel = () => { sequence++; pending = undefined; current?.abort(); };
+  load.busy = () => !!current;
   return load;
 }
 
@@ -610,6 +626,7 @@ let refreshTimer;
 let rangeLoader;
 let eventStream;
 let rangeDraft = false;
+let refreshCoalesceMS = 200;
 const autoApplyRange = debounce(() => applyRange(), 300);
 function loadPeriod(manual = false) {
   if (rangeDraft) return;
@@ -619,7 +636,7 @@ function loadPeriod(manual = false) {
 }
 function scheduleRefresh() {
   if (refreshTimer || document.hidden) return;
-  refreshTimer = setTimeout(() => { refreshTimer = undefined; loadPeriod(); }, 1000);
+  refreshTimer = setTimeout(() => { refreshTimer = undefined; loadPeriod(); }, refreshCoalesceMS);
 }
 function choosePeriod() {
   autoApplyRange.cancel();
@@ -680,7 +697,10 @@ function connect() {
 }
 
 function startDashboard() {
-  rangeLoader = createRangeLoader(fetch, render, (status, manual, message) => {
+  rangeLoader = createRangeLoader(fetch, (data,timing) => {
+    window.meterDiagnostics = {...window.meterDiagnostics, snapshot_request_ms: timing.request_ms};
+    render(data);
+  }, (status, manual, message) => {
     if (status === 'loading' && !manual && state.generated_at) return;
     $('#loadStatus').dataset.state = status;
     $('#loadStatus').textContent = status === 'loading' ? '正在加载所选范围…' : status === 'error' ? message : `已筛选：${periodLabels[state.period] || '今天'}`;

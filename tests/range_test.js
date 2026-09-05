@@ -21,10 +21,12 @@ async function main() {
   assert.equal(requests.length, 1, 'live notifications must coalesce while a request is in flight');
   const latest = loader(custom.toString(), true);
   assert.equal(requests[0].signal.aborted, true);
-  requests[1].resolve(response('custom'));
-  await latest;
+  assert.equal(requests.length, 1, 'a new range waits for cancellation to settle; only one transport is in flight');
   requests[0].resolve(response('today')); // Simulate cancellation ignored by transport.
   await old;
+  requests[1].resolve(response('custom'));
+  await latest;
+  await new Promise(resolve => setTimeout(resolve, 0));
   assert.deepEqual(rendered, [{period: 'custom'}], 'late responses must not replace the selected range');
   const failure = loader('period=all', true);
   requests[2].resolve({ok: false, status: 503});
@@ -40,6 +42,15 @@ async function main() {
   requests[4].resolve(response('today'));
   await draft;
   assert.equal(rendered.at(-1).period, 'all', 'an old request must not overwrite an in-progress date edit');
+  const slow = loader('period=today');
+  loader('period=today'); loader('period=today');
+  assert.equal(requests.length, 6);
+  assert.equal(requests[5].signal.aborted, false, 'notifications must not repeatedly abort a slow snapshot');
+  requests[5].resolve(response('today'));
+  await slow;
+  assert.equal(requests.length, 7, 'an in-flight change triggers one immediate trailing request');
+  requests[6].resolve(response('today'));
+  await new Promise(resolve => setTimeout(resolve, 0));
   let changes = 0;
   const autoApply = debounce(() => changes++, 5);
   autoApply(); autoApply(); autoApply();

@@ -72,6 +72,9 @@ func resolveDashboardRange(q url.Values, now time.Time) (dashboardRange, error) 
 func rangeBound(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05") }
 
 func (s *server) buildSnapshotForRange(r dashboardRange) any {
+	started := time.Now()
+	s.viewMu.RLock()
+	defer s.viewMu.RUnlock()
 	v := s.snapshotBetween(r.Start, r.End).(map[string]any)
 	var firstEvent string
 	_ = s.db.QueryRow("SELECT timestamp FROM usage_events ORDER BY timestamp LIMIT 1").Scan(&firstEvent)
@@ -80,10 +83,12 @@ func (s *server) buildSnapshotForRange(r dashboardRange) any {
 	v["timezone"] = "Asia/Shanghai"
 	v["timezone_label"] = "北京时间 UTC+8"
 	v["range_end"] = r.End
+	s.attachWatermark(v, r.cacheKey(), started)
 	return v
 }
 
 func (s *server) serveSnapshot(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
 	rng, err := resolveDashboardRange(r.URL.Query(), time.Now())
 	w.Header().Set("Cache-Control", "no-store")
 	if err != nil {
@@ -103,6 +108,7 @@ func (s *server) serveSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Vary", "Accept-Encoding")
+	w.Header().Set("Server-Timing", fmt.Sprintf("snapshot;dur=%.3f", float64(time.Since(started).Microseconds())/1000))
 	if acceptsGzip(r.Header.Get("Accept-Encoding")) {
 		w.Header().Set("Content-Encoding", "gzip")
 		_, _ = w.Write(entry.Gzip)

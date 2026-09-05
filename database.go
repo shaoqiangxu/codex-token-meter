@@ -34,6 +34,13 @@ CREATE TABLE IF NOT EXISTS agents (
  host_id TEXT PRIMARY KEY, alias TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
  platform TEXT, created_at TEXT NOT NULL, last_seen TEXT, revoked_at TEXT
 );
+CREATE TABLE IF NOT EXISTS realtime_state (
+ id INTEGER PRIMARY KEY CHECK(id=1), ledger_revision INTEGER NOT NULL DEFAULT 0, last_ledger_at TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS agent_telemetry (
+ host_id TEXT PRIMARY KEY, report BLOB NOT NULL, received_at TEXT NOT NULL,
+ FOREIGN KEY(host_id) REFERENCES agents(host_id)
+);
 CREATE TABLE IF NOT EXISTS enrollments (
  token_hash TEXT PRIMARY KEY, platform TEXT NOT NULL, expires_at TEXT NOT NULL,
  used_at TEXT, created_at TEXT NOT NULL
@@ -89,6 +96,8 @@ CREATE TABLE IF NOT EXISTS ingested_events (
 CREATE UNIQUE INDEX IF NOT EXISTS usage_dedup ON usage_events(host_id, dedup_key) WHERE dedup_key IS NOT NULL AND dedup_key <> '';
 CREATE INDEX IF NOT EXISTS usage_time ON usage_events(timestamp);
 CREATE INDEX IF NOT EXISTS usage_session ON usage_events(host_id, conversation_id, timestamp);
+INSERT OR IGNORE INTO realtime_state(id,ledger_revision,last_ledger_at)
+ SELECT 1,COALESCE(MAX(id),0),COALESCE(MAX(created_at),'') FROM usage_events;
 CREATE TABLE IF NOT EXISTS reconciliation (
  id INTEGER PRIMARY KEY AUTOINCREMENT, host_id TEXT NOT NULL, conversation_id TEXT NOT NULL,
  response_id TEXT, estimated_tokens INTEGER NOT NULL, exact_output_tokens INTEGER NOT NULL,

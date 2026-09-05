@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -87,7 +88,10 @@ func (r dashboardRange) cacheKey() string {
 }
 
 func (s *server) cachedSnapshot(ctx context.Context, r dashboardRange) (*encodedSnapshot, error) {
-	return s.snapshots.get(ctx, r.cacheKey(), func() any { return s.buildSnapshotForRange(r) })
+	s.hub.mu.Lock()
+	revision := s.hub.seq
+	s.hub.mu.Unlock()
+	return s.snapshots.get(ctx, fmt.Sprintf("%s|%d", r.cacheKey(), revision), func() any { return s.buildSnapshotForRange(r) })
 }
 
 func (s *server) snapshotForRange(r dashboardRange) any {

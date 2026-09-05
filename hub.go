@@ -14,16 +14,28 @@ type sseMessage struct {
 	Data []byte
 }
 type eventHub struct {
-	mu      sync.Mutex
-	seq     int64
-	clients map[chan sseMessage]bool
-	dirty   bool
+	mu                sync.Mutex
+	seq               int64
+	clients           map[chan sseMessage]bool
+	dirty             bool
+	epoch             string
+	lastSent          time.Time
+	interval          time.Duration
+	heartbeatInterval time.Duration
+	notification      func() any
+	pulse             func() any
 }
 
-func newHub() *eventHub   { return &eventHub{clients: map[chan sseMessage]bool{}} }
-func (h *eventHub) mark() { h.mu.Lock(); h.dirty = true; h.mu.Unlock() }
+func newHub() *eventHub {
+	epoch, err := randomToken(12)
+	if err != nil {
+		panic("cannot initialize stream epoch")
+	}
+	return &eventHub{clients: map[chan sseMessage]bool{}, epoch: epoch, interval: 200 * time.Millisecond, heartbeatInterval: 5 * time.Second}
+}
+func (h *eventHub) mark() { h.mu.Lock(); h.seq++; h.dirty = true; h.mu.Unlock() }
 func (h *eventHub) run(ctx context.Context, snapshot func() any) {
-	t := time.NewTicker(time.Second)
+	t := time.NewTicker(h.interval)
 	defer t.Stop()
 	for {
 		select {
@@ -42,7 +54,6 @@ func (h *eventHub) publish(snapshot func() any) {
 		return
 	}
 	h.dirty = false
-	h.seq++
 	seq := h.seq
 	clients := make(map[chan sseMessage]bool, len(h.clients))
 	full := false
@@ -54,13 +65,17 @@ func (h *eventHub) publish(snapshot func() any) {
 	// Ingest also marks this hub. Do not hold its lock while querying SQLite.
 	// With no viewers or notification-only viewers, no snapshot is needed.
 	var b []byte
+	notification := []byte(`{}`)
+	if h.notification != nil {
+		notification, _ = json.Marshal(h.notification())
+	}
 	if full {
 		b, _ = json.Marshal(snapshot())
 	}
 	for c, notify := range clients {
 		data := b
 		if notify {
-			data = []byte(`{}`)
+			data = notification
 		}
 		m := sseMessage{seq, data}
 		select {
@@ -86,7 +101,7 @@ func (h *eventHub) serve(w http.ResponseWriter, r *http.Request, snapshot func()
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Cache-Control", "private, no-store, no-transform")
 	w.Header().Set("X-Accel-Buffering", "no")
 	notify := r.URL.Query().Get("notify") == "1"
 	c := make(chan sseMessage, 1)
@@ -95,7 +110,11 @@ func (h *eventHub) serve(w http.ResponseWriter, r *http.Request, snapshot func()
 	h.mu.Unlock()
 	defer func() { h.mu.Lock(); delete(h.clients, c); h.mu.Unlock() }()
 	if notify {
-		fmt.Fprint(w, "event: ready\ndata: {}\n\n")
+		data := []byte(`{}`)
+		if h.notification != nil {
+			data, _ = json.Marshal(h.notification())
+		}
+		fmt.Fprintf(w, "event: ready\ndata: %s\n\n", data)
 	} else {
 		b, _ := json.Marshal(snapshot())
 		fmt.Fprintf(w, "event: snapshot\ndata: %s\n\n", b)
@@ -103,13 +122,14 @@ func (h *eventHub) serve(w http.ResponseWriter, r *http.Request, snapshot func()
 	// Connections start fresh; replaying old full snapshots would roll the UI
 	// backwards and trigger hundreds of concurrent range requests.
 	f.Flush()
-	ping := time.NewTicker(15 * time.Second)
+	ping := time.NewTicker(h.heartbeatInterval)
 	defer ping.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
 		case m := <-c:
+			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(10 * time.Second))
 			event := "update"
 			if notify {
 				event = "changed"
@@ -118,11 +138,23 @@ func (h *eventHub) serve(w http.ResponseWriter, r *http.Request, snapshot func()
 				return
 			}
 			f.Flush()
+			h.mu.Lock()
+			h.lastSent = time.Now().UTC()
+			h.mu.Unlock()
 		case <-ping.C:
-			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
+			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(10 * time.Second))
+			value := any(map[string]any{"server_epoch": h.epoch, "server_time": time.Now().UTC()})
+			if h.pulse != nil {
+				value = h.pulse()
+			}
+			data, _ := json.Marshal(value)
+			if _, err := fmt.Fprintf(w, "event: heartbeat\ndata: %s\n\n", data); err != nil {
 				return
 			}
 			f.Flush()
+			h.mu.Lock()
+			h.lastSent = time.Now().UTC()
+			h.mu.Unlock()
 		}
 	}
 }

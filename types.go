@@ -47,9 +47,10 @@ type SessionMetadata struct {
 }
 
 type IngestBatch struct {
-	HostID   string            `json:"host_id"`
-	Events   []UsageEvent      `json:"events"`
-	Metadata []SessionMetadata `json:"metadata,omitempty"`
+	HostID    string            `json:"host_id"`
+	Events    []UsageEvent      `json:"events"`
+	Metadata  []SessionMetadata `json:"metadata,omitempty"`
+	Telemetry *AgentTelemetry   `json:"telemetry,omitempty"`
 }
 
 type AgentConfig struct {
@@ -64,6 +65,7 @@ type AgentConfig struct {
 	seen                map[string]fileStamp
 	metadataSent        map[string]string
 	lastMetadataScan    time.Time
+	health              *agentHealth
 }
 
 type fileStamp struct {
@@ -80,4 +82,5 @@ type ServerConfig struct {
 	PublicURL         string            `json:"public_url"`
 	ArtifactDir       string            `json:"artifact_dir"`
 	ProjectAliases    map[string]string `json:"project_aliases,omitempty"`
+	Realtime          RealtimeConfig    `json:"realtime,omitempty"`
 }
