@@ -86,3 +86,31 @@ func TestSnapshotCacheKeysSeparateDaysAndCustomRanges(t *testing.T) {
 		t.Fatal("fixed custom end confused with now")
 	}
 }
+
+func TestSnapshotCacheMixedRangeBurstDoesNotRebuildQueuedWork(t *testing.T) {
+	var cache snapshotCache
+	var builds atomic.Int32
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < 100; i++ {
+		key := []string{"today", "24h", "week", "month", "all"}[i%5]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := cache.get(context.Background(), key, func() any {
+				builds.Add(1)
+				time.Sleep(260 * time.Millisecond) // Five ranges exceed the one-second TTL.
+				return key
+			})
+			if err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if builds.Load() != 5 {
+		t.Fatalf("mixed-range burst caused %d builds, want 5", builds.Load())
+	}
+}

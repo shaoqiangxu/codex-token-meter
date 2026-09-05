@@ -23,6 +23,7 @@ type snapshotCache struct {
 }
 
 func (c *snapshotCache) get(ctx context.Context, key string, build func() any) (*encodedSnapshot, error) {
+	requestedAt := time.Now()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -31,7 +32,9 @@ func (c *snapshotCache) get(ctx context.Context, key string, build func() any) (
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if entry := c.entries[key]; entry != nil && time.Since(entry.Created) < time.Second {
+	// A response built after this request arrived is fresh for this waiter,
+	// even if other ranges used up the TTL while it waited for the build lock.
+	if entry := c.entries[key]; entry != nil && (time.Since(entry.Created) < time.Second || !entry.Created.Before(requestedAt)) {
 		return entry, nil
 	}
 	value := build()
