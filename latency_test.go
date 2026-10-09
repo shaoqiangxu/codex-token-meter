@@ -41,6 +41,11 @@ func TestRealDataLatencyProfile(t *testing.T) {
 	}
 	defer readPool.Close()
 	s := &server{db: db, readPool: readPool, accounting: &accountingCache{}, hub: newHub(), ingestTimes: map[string][]time.Time{}}
+	if os.Getenv("METER_PROFILE_REFERENCE") == "1" {
+		// Reproduce the reference path used when the legacy 100k cache ceiling
+		// was exceeded, on the same private copy and without production writes.
+		s.accounting = nil
+	}
 	var n int
 	db.QueryRow("SELECT COUNT(*) FROM usage_events").Scan(&n)
 	db.Exec("INSERT INTO agents(host_id,alias,token_hash,created_at)VALUES('profile','synthetic',?,?)", tokenHash("synthetic-profile"), time.Now().Format(time.RFC3339Nano))
