@@ -3,6 +3,13 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use semantic versioning.
 
+## [0.1.10] - 2026-10-09
+
+### Fixed
+
+- Prepare the Linux agent state parent before enrollment so a service running as the sudo caller can traverse it. Secure the configuration and SQLite files, including sidecars, and refuse to re-enroll an existing installation.
+- Expand the bounded numeric pricing cache to 500000 events. Production crossed the former 100000-event ceiling, causing live pushes to fall back to full per-event pricing; retain the same historical pricing and exact fallback beyond the bound.
+
 ## [0.1.9] - 2026-09-05
 
 ### Fixed

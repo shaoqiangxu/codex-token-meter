@@ -11,7 +11,10 @@ import (
 // second ledger: restart discards it; SQLite remains the sole authority.
 // New snapshots read only appended IDs, not all historical usage/prices again.
 // A fixed bound falls back to the original query rather than dropping records.
-const maxCachedCostEvents = 100000
+// Production exceeded the former 100k ceiling, disabling incremental pricing
+// even for a tiny live range. Keep a finite numeric-only budget with headroom;
+// larger ledgers still use the exact reference query rather than omit records.
+const maxCachedCostEvents = 500000
 
 type pricedEvent struct {
 	id                 int64

@@ -10,7 +10,7 @@ import (
 	"syscall"
 )
 
-const version = "0.1.9"
+const version = "0.1.10"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.LUTC)

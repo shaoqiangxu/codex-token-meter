@@ -728,12 +728,29 @@ func (s *server) linuxInstaller(w http.ResponseWriter, r *http.Request) {
 set -eu
 [ "$(id -u)" = 0 ] || { echo 'run through sudo'; exit 1; }
 run_user=${SUDO_USER:-root}; run_group=$(id -gn "$run_user")
+[ ! -e /etc/codex-token-meter/agent.json ] || { echo 'Meter is already enrolled; update the executable without re-enrolling'; exit 1; }
+# The enrollment scan creates SQLite as root. Prepare its parent first so the
+# service user can still traverse it after the child directory changes owner.
+if [ ! -d /var/lib/codex-token-meter ]; then
+  install -d -m 0750 -o root -g "$run_group" /var/lib/codex-token-meter
+fi
+if ! runuser -u "$run_user" -- test -x /var/lib/codex-token-meter; then
+  echo 'Meter state parent is not accessible to the service user; check its owner and permissions'; exit 1
+fi
+install -d -m 0700 -o "$run_user" -g "$run_group" /var/lib/codex-token-meter/agent
 case "$(uname -m)" in x86_64|amd64) a=amd64; sum='%s';; aarch64|arm64) a=arm64; sum='%s';; *) echo unsupported; exit 1;; esac
 n="codex-meter-linux-$a"; curl -fsSLo /usr/local/bin/codex-meter "%s/downloads/$n?sha256=$sum"; echo "$sum  /usr/local/bin/codex-meter" | sha256sum -c -; chmod 0755 /usr/local/bin/codex-meter
 /usr/local/bin/codex-meter enroll --server '%s' --token '%s' --platform linux --config /etc/codex-token-meter/agent.json
 install -d -m 0700 -o "$run_user" -g "$run_group" /var/lib/codex-token-meter/agent
 chown root:"$run_group" /etc/codex-token-meter; chmod 0750 /etc/codex-token-meter
-chown "$run_user:$run_group" /etc/codex-token-meter/agent.json /var/lib/codex-token-meter/agent/agent.db
+chown "$run_user:$run_group" /etc/codex-token-meter/agent.json
+chmod 0600 /etc/codex-token-meter/agent.json
+for meter_state_file in agent.db agent.db-wal agent.db-shm; do
+  meter_state_path="/var/lib/codex-token-meter/agent/$meter_state_file"
+  if [ -e "$meter_state_path" ]; then
+    chown "$run_user:$run_group" "$meter_state_path"; chmod 0600 "$meter_state_path"
+  fi
+done
 cat >/etc/systemd/system/codex-meter-agent.service <<UNIT
 [Unit]
 Description=Codex Token Meter Agent
@@ -741,6 +758,7 @@ After=network-online.target
 [Service]
 User=$run_user
 Group=$run_group
+UMask=0077
 ExecStart=/usr/local/bin/codex-meter agent --config /etc/codex-token-meter/agent.json
 Restart=always
 RestartSec=3
